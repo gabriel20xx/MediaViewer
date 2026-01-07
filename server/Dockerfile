@@ -1,4 +1,11 @@
-FROM node:20-bookworm-slim AS deps
+FROM node:20-bookworm-slim AS base
+
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends openssl ca-certificates \
+	&& rm -rf /var/lib/apt/lists/*
+
+
+FROM base AS deps
 
 WORKDIR /app
 
@@ -6,7 +13,7 @@ COPY package.json package-lock.json* ./
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 
-FROM node:20-bookworm-slim AS build
+FROM base AS build
 
 WORKDIR /app
 
@@ -23,7 +30,7 @@ COPY public ./public
 RUN npm run build
 
 
-FROM node:20-bookworm-slim AS runtime
+FROM base AS runtime
 
 WORKDIR /app
 ENV NODE_ENV=production
