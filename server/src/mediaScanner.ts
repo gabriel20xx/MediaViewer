@@ -3,6 +3,7 @@ import path from 'node:path';
 import { loadFunscriptIfExists } from './funscript.js';
 import type { Db } from './db.js';
 import { newId } from './ids.js';
+import { probeVrWithFfprobe } from './ffprobe.js';
 
 function mediaTypeFromExt(ext: string): string {
   const e = ext.toLowerCase();
@@ -72,7 +73,23 @@ export async function upsertMediaFromDisk(opts: {
 
     const fun = await loadFunscriptIfExists(absPath);
 
-    const isVr = mediaType === 'video' ? isVrFromRelPath(relPath) : false;
+    let isVr = false;
+    let vrFov: number | null = null;
+    let vrStereo: string | null = null;
+    let vrProjection: string | null = null;
+
+    if (mediaType === 'video') {
+      const probe = await probeVrWithFfprobe(absPath);
+      if (probe && probe.isVr) {
+        isVr = true;
+        vrFov = probe.fov ?? null;
+        vrStereo = probe.stereo ?? null;
+        vrProjection = probe.projection ?? null;
+      } else {
+        // Fallback: filename/path heuristic (keeps compatibility with common VR naming conventions).
+        isVr = isVrFromRelPath(relPath);
+      }
+    }
 
     const sizeBytes = BigInt(stat.size);
     const modifiedMs = BigInt(Math.trunc(stat.mtimeMs));
@@ -80,9 +97,9 @@ export async function upsertMediaFromDisk(opts: {
     await db.pool.query(
       `
         INSERT INTO media_items (
-          id, rel_path, filename, ext, media_type, size_bytes, modified_ms, has_funscript, is_vr, updated_at
+          id, rel_path, filename, ext, media_type, size_bytes, modified_ms, has_funscript, is_vr, vr_fov, vr_stereo, vr_projection, updated_at
         ) VALUES (
-          $1, $2, $3, $4, $5, $6::bigint, $7::bigint, $8, $9, now()
+          $1, $2, $3, $4, $5, $6::bigint, $7::bigint, $8, $9, $10, $11, $12, now()
         )
         ON CONFLICT (rel_path)
         DO UPDATE SET
@@ -93,6 +110,9 @@ export async function upsertMediaFromDisk(opts: {
           modified_ms = EXCLUDED.modified_ms,
           has_funscript = EXCLUDED.has_funscript,
           is_vr = EXCLUDED.is_vr,
+          vr_fov = EXCLUDED.vr_fov,
+          vr_stereo = EXCLUDED.vr_stereo,
+          vr_projection = EXCLUDED.vr_projection,
           updated_at = now();
       `,
       [
@@ -105,6 +125,9 @@ export async function upsertMediaFromDisk(opts: {
         modifiedMs.toString(),
         Boolean(fun),
         isVr,
+        vrFov,
+        vrStereo,
+        vrProjection,
       ]
     );
 

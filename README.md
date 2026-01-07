@@ -81,6 +81,15 @@ Notes:
 - The Web UI shows “DeoVR” and “HereSphere” buttons on VR-tagged videos.
 - HereSphere integration is intended for HereSphere’s built-in browser “Web Stream” flow (open the `/heresphere` URL inside HereSphere).
 
+## VR metadata detection (ffprobe)
+
+MediaViewer will try to detect VR metadata (stereo layout, projection, 180/360 FOV) from the video container/stream using `ffprobe` when it’s available.
+
+- Docker: the server image includes `ffprobe` (via `ffmpeg`).
+- Non-Docker: install FFmpeg so `ffprobe` is on `PATH`, or set `FFPROBE_PATH` to the full path of `ffprobe.exe`.
+
+After enabling `ffprobe`, run a rescan (`POST /api/scan` or click “Rescan” in the Web UI) to backfill the DB columns.
+
 ## Notes
 
 - Media scanning is recursive.

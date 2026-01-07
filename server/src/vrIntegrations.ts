@@ -65,7 +65,7 @@ async function listVrVideos(db: Db, limit: number) {
 
 async function getVideoById(db: Db, id: string) {
   const res = await db.pool.query(
-    `SELECT id, filename, rel_path, has_funscript FROM media_items WHERE id=$1 AND media_type='video' LIMIT 1`,
+    `SELECT id, filename, rel_path, has_funscript, vr_fov, vr_stereo, vr_projection FROM media_items WHERE id=$1 AND media_type='video' LIMIT 1`,
     [id]
   );
   const r = res.rows[0];
@@ -75,6 +75,9 @@ async function getVideoById(db: Db, id: string) {
     filename: r.filename as string,
     relPath: r.rel_path as string,
     hasFunscript: Boolean(r.has_funscript),
+    vrFov: (typeof r.vr_fov === 'number' ? (r.vr_fov as number) : r.vr_fov ? Number(r.vr_fov) : null) as number | null,
+    vrStereo: (r.vr_stereo ? String(r.vr_stereo) : null) as string | null,
+    vrProjection: (r.vr_projection ? String(r.vr_projection) : null) as string | null,
   };
 }
 
@@ -118,8 +121,10 @@ export function registerVrIntegrations(app: express.Express, db: Db) {
     const item = await getVideoById(db, id);
     if (!item) return res.status(404).json({ error: 'Not found' });
 
-    const stereo = inferStereo(item.filename);
-    const fov = inferVrFov(item.filename);
+    const stereo = (item.vrStereo === 'sbs' || item.vrStereo === 'tb' || item.vrStereo === 'mono')
+      ? (item.vrStereo as any)
+      : inferStereo(item.filename);
+    const fov = item.vrFov === 180 || item.vrFov === 360 ? (item.vrFov as 180 | 360) : inferVrFov(item.filename);
 
     res.json({
       encodings: [
@@ -167,8 +172,10 @@ export function registerVrIntegrations(app: express.Express, db: Db) {
     const item = await getVideoById(db, id);
     if (!item) return res.status(404).json({ access: 0, error: 'Not found' });
 
-    const stereo = inferStereo(item.filename);
-    const fov = inferVrFov(item.filename);
+    const stereo = (item.vrStereo === 'sbs' || item.vrStereo === 'tb' || item.vrStereo === 'mono')
+      ? (item.vrStereo as any)
+      : inferStereo(item.filename);
+    const fov = item.vrFov === 180 || item.vrFov === 360 ? (item.vrFov as 180 | 360) : inferVrFov(item.filename);
     const scripts = item.hasFunscript
       ? [
           {

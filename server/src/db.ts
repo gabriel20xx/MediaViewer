@@ -29,6 +29,9 @@ export async function ensureSchema(db: Db): Promise<void> {
       modified_ms BIGINT NOT NULL,
       has_funscript BOOLEAN NOT NULL DEFAULT FALSE,
       is_vr BOOLEAN NOT NULL DEFAULT FALSE,
+      vr_fov SMALLINT,
+      vr_stereo TEXT,
+      vr_projection TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
@@ -63,5 +66,16 @@ export async function ensureSchema(db: Db): Promise<void> {
   await db.pool.query(`
     ALTER TABLE media_items
       ADD COLUMN IF NOT EXISTS is_vr BOOLEAN NOT NULL DEFAULT FALSE;
+  `);
+
+  await db.pool.query(`
+    ALTER TABLE media_items
+      ADD COLUMN IF NOT EXISTS vr_fov SMALLINT;
+
+    ALTER TABLE media_items
+      ADD COLUMN IF NOT EXISTS vr_stereo TEXT;
+
+    ALTER TABLE media_items
+      ADD COLUMN IF NOT EXISTS vr_projection TEXT;
   `);
 }

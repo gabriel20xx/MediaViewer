@@ -269,20 +269,14 @@
             ? `<img class="thumbMedia" loading="lazy" src="${cachedThumb}" alt="${escapeHtml(item.filename)}" />`
             : `<video class="thumbMedia mvThumbVideo" muted playsinline preload="metadata" data-id="${item.id}" data-src="/api/media/${item.id}/stream"></video>`;
 
-        const openLabel = item.isVr ? 'Open (VR)' : 'Play';
-
         return `
-          <div class="card" role="button" tabindex="0" data-open-id="${escapeHtml(item.id)}" aria-label="${escapeHtml(openLabel)}: ${escapeHtml(item.filename)}">
+          <div class="card" role="button" tabindex="0" data-open-id="${escapeHtml(item.id)}" aria-label="Open: ${escapeHtml(item.filename)}">
             <div class="thumb">
               ${thumb}
-              <div class="thumbOverlay">Open</div>
             </div>
             <div class="meta">
               <div class="name">${escapeHtml(item.filename)}</div>
               <div class="tags">${tagT}${tagF}${durationTag}</div>
-              <div class="row">
-                <span class="small">${escapeHtml(openLabel)}</span>
-              </div>
             </div>
           </div>
         `;

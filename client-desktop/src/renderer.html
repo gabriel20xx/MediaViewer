@@ -335,7 +335,7 @@
         $('now').textContent = it ? `Now: ${it.filename}` : `Now: ${id}`;
         $('video').src = new URL(`/api/media/${id}/stream`, state.serverUrl).toString();
 
-        if (!suppressSync) {
+        if (!suppressSync && !state.followRemote) {
           sendSyncUpdate({ mediaId: id, timeMs: 0, paused: true, fps: 30, frame: 0 });
         }
 
@@ -380,8 +380,11 @@
             } catch {}
           }
 
-          // Publish sync state (throttled) so Web UI can follow desktop.
-          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame });
+          // Publish sync state only when we're the "driver".
+          // If followRemote is ON, publishing our paused=true back would fight the web player.
+          if (!state.followRemote) {
+            sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame });
+          }
 
           // Drive serial from funscript.
           if (state.drive && state.funscript?.actions?.length) {
@@ -490,6 +493,17 @@
         state.followRemote = !state.followRemote;
         $('btnFollow').textContent = state.followRemote ? 'Follow remote: ON' : 'Follow remote: OFF';
         savePrefs();
+
+        // If we just became the driver, immediately publish our current state.
+        if (!state.followRemote) {
+          const v = $('video');
+          if (state.current && v instanceof HTMLVideoElement) {
+            const fps = 30;
+            const timeMs = Math.round((v.currentTime || 0) * 1000);
+            const frame = currentFrame(v.currentTime || 0, fps);
+            sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame });
+          }
+        }
       });
 
       loadPrefs();
@@ -525,6 +539,7 @@
         const fps = 30;
         const push = () => {
           if (!state.current) return;
+          if (state.followRemote) return;
           const timeMs = Math.round((v.currentTime || 0) * 1000);
           const frame = currentFrame(v.currentTime || 0, fps);
           sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame });
