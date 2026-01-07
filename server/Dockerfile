@@ -1,7 +1,7 @@
 FROM node:20-bookworm-slim AS base
 
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends openssl ca-certificates \
+	&& apt-get install -y --no-install-recommends ca-certificates \
 	&& rm -rf /var/lib/apt/lists/*
 
 
@@ -20,9 +20,6 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json package-lock.json* ./
 
-COPY prisma ./prisma
-RUN npx prisma generate
-
 COPY tsconfig.json ./
 COPY src ./src
 COPY public ./public
@@ -34,17 +31,19 @@ FROM base AS runtime
 
 WORKDIR /app
 ENV NODE_ENV=production
+ENV PORT=3000
 
 # Keep only prod deps in runtime
 COPY package.json package-lock.json* ./
-# Copy node_modules *after* `prisma generate` ran (it writes to node_modules/.prisma)
-COPY --from=build /app/node_modules ./node_modules
+# Copy node_modules from deps stage
+COPY --from=deps /app/node_modules ./node_modules
 RUN npm prune --omit=dev
 
-COPY --from=build /app/prisma ./prisma
-COPY --from=build /app/public ./public
-COPY --from=build /app/dist ./dist
+COPY --from=build --chown=node:node /app/public ./public
+COPY --from=build --chown=node:node /app/dist ./dist
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/index.js"]
+USER node
+
+CMD ["node", "dist/index.js"]

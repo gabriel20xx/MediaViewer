@@ -4,33 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>MediaViewer</title>
-    <style>
-      :root { color-scheme: dark; }
-      body { margin: 0; font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; background: #0b0c0f; color: #e6e6e6; }
-      header { position: sticky; top: 0; background: rgba(11,12,15,0.9); backdrop-filter: blur(8px); border-bottom: 1px solid #222; padding: 12px 16px; display: flex; gap: 12px; align-items: center; }
-      header h1 { font-size: 14px; margin: 0; font-weight: 600; color: #fff; }
-      .search { flex: 1; }
-      .search input { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #2a2f3a; background: #11131a; color: #e6e6e6; }
-      .btn { padding: 10px 12px; border-radius: 8px; border: 1px solid #2a2f3a; background: #11131a; color: #e6e6e6; cursor: pointer; }
-      .btn:disabled { opacity: 0.6; cursor: not-allowed; }
-      main { padding: 16px; }
-      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
-      .card { border: 1px solid #222; border-radius: 10px; overflow: hidden; background: #0f1117; }
-      .thumb { aspect-ratio: 16/9; display: grid; place-items: center; background: #0b0c0f; border-bottom: 1px solid #222; }
-      .thumb span { font-size: 12px; opacity: 0.8; }
-      .meta { padding: 10px; display: grid; gap: 6px; }
-      .name { font-size: 12px; line-height: 1.2; word-break: break-word; }
-      .tags { display: flex; gap: 6px; flex-wrap: wrap; }
-      .tag { font-size: 11px; padding: 2px 6px; border-radius: 999px; border: 1px solid #2a2f3a; background: #11131a; }
-      .row { display: flex; gap: 8px; align-items: center; }
-      .pager { display: flex; gap: 8px; justify-content: center; padding: 16px 0; }
-      a { color: inherit; text-decoration: none; }
-      .playerWrap { padding: 16px; }
-      video { width: 100%; max-height: 80vh; background: #000; }
-      .small { font-size: 12px; opacity: 0.85; }
-      .topbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
-      .topbar a { border: 1px solid #2a2f3a; padding: 8px 10px; border-radius: 8px; background: #11131a; }
-    </style>
+    <link rel="stylesheet" href="/styles.css" />
     <script>
       const state = {
         q: '',
@@ -38,8 +12,20 @@
         pageSize: 48,
         total: 0,
         items: [],
+        funFilter: 'all', // all | with | without
+        gridMin: 180,
+        sort: 'newest', // newest | lenAsc | lenDesc
+        lenMinSec: 0,
+        durationsSec: {},
+        _durToken: 0,
         view: 'grid', // grid | player | vr
         current: null,
+        clientId: null,
+        ws: null,
+        wsConnected: false,
+        wsSessionId: 'default',
+        _applyingRemoteUntil: 0,
+        _lastSentAt: 0,
       };
 
       function el(id) { return document.getElementById(id); }
@@ -56,6 +42,122 @@
         render();
       }
 
+      function ensureClientId() {
+        if (state.clientId) return state.clientId;
+        const key = 'mvClientId';
+        const existing = window.localStorage.getItem(key);
+        if (existing) {
+          state.clientId = existing;
+          return existing;
+        }
+        const id = 'web-' + Math.random().toString(16).slice(2);
+        window.localStorage.setItem(key, id);
+        state.clientId = id;
+        return id;
+      }
+
+      function wsUrlFromHttp(base) {
+        const u = new URL(base);
+        u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+        u.pathname = '/ws';
+        u.search = '';
+        u.hash = '';
+        return u.toString();
+      }
+
+      function connectWs() {
+        ensureClientId();
+        if (state.ws && (state.ws.readyState === 0 || state.ws.readyState === 1)) return;
+
+        const wsUrl = wsUrlFromHttp(window.location.origin);
+        const ws = new WebSocket(wsUrl);
+        state.ws = ws;
+
+        ws.addEventListener('open', () => {
+          state.wsConnected = true;
+          ws.send(JSON.stringify({ type: 'sync:hello', clientId: state.clientId, sessionId: state.wsSessionId }));
+        });
+
+        ws.addEventListener('close', () => {
+          state.wsConnected = false;
+          window.setTimeout(() => connectWs(), 1000);
+        });
+
+        ws.addEventListener('message', (evt) => {
+          let msg;
+          try { msg = JSON.parse(String(evt.data)); } catch { return; }
+          if (!msg || msg.type !== 'sync:state' || !msg.state) return;
+          applyRemoteSyncState(msg.state);
+        });
+      }
+
+      function sendSyncUpdate(update) {
+        if (!state.wsConnected || !state.ws || state.ws.readyState !== 1) return;
+        if (Date.now() < state._applyingRemoteUntil) return;
+        const now = Date.now();
+        if (now - state._lastSentAt < 200) return;
+        state._lastSentAt = now;
+
+        state.ws.send(JSON.stringify({
+          type: 'sync:update',
+          sessionId: state.wsSessionId,
+          clientId: state.clientId,
+          ...update,
+        }));
+      }
+
+      async function getItemInfo(id) {
+        const found = state.items.find((x) => x.id === id);
+        if (found) return found;
+        try {
+          const info = await apiJson(`/api/media/${id}/fileinfo`);
+          return {
+            id: info.id,
+            filename: info.filename,
+            relPath: info.relPath,
+            mediaType: info.mediaType,
+            hasFunscript: info.hasFunscript,
+            isVr: info.isVr,
+          };
+        } catch {
+          return { id, filename: '', relPath: '', mediaType: 'video', hasFunscript: false, isVr: false };
+        }
+      }
+
+      async function applyRemoteSyncState(remote) {
+        if (!remote) return;
+        if (remote.fromClientId && remote.fromClientId === state.clientId) return;
+        if (!remote.mediaId) return;
+
+        const id = String(remote.mediaId);
+        const item = await getItemInfo(id);
+
+        // If different media, follow it.
+        if (state.current?.id !== id || state.view === 'grid') {
+          state._applyingRemoteUntil = Date.now() + 800;
+          setView('player', { id, item });
+          // Wait a tick for DOM.
+          await new Promise((r) => setTimeout(r, 0));
+        }
+
+        const v = document.getElementById('v');
+        if (!(v instanceof HTMLVideoElement)) return;
+
+        state._applyingRemoteUntil = Date.now() + 800;
+
+        const targetTime = Math.max(0, (Number(remote.timeMs) || 0) / 1000);
+        if (Number.isFinite(v.currentTime) && Math.abs(v.currentTime - targetTime) > 0.5) {
+          try { v.currentTime = targetTime; } catch {}
+        }
+
+        const paused = Boolean(remote.paused);
+        if (paused) {
+          try { v.pause(); } catch {}
+        } else {
+          try { await v.play(); } catch {}
+        }
+      }
+
       function formatPageLabel() {
         const maxPage = Math.max(1, Math.ceil(state.total / state.pageSize));
         return `Page ${state.page} / ${maxPage} (${state.total} items)`;
@@ -63,7 +165,15 @@
 
       async function loadList() {
         const q = encodeURIComponent(state.q);
-        const data = await apiJson(`/api/media?q=${q}&page=${state.page}&pageSize=${state.pageSize}`);
+        const params = new URLSearchParams();
+        params.set('q', state.q);
+        params.set('page', String(state.page));
+        params.set('pageSize', String(state.pageSize));
+        params.set('mediaType', 'video');
+        if (state.funFilter === 'with') params.set('hasFunscript', '1');
+        if (state.funFilter === 'without') params.set('hasFunscript', '0');
+
+        const data = await apiJson(`/api/media?${params.toString()}`);
         state.total = data.total;
         state.items = data.items;
       }
@@ -75,20 +185,74 @@
         render();
       }
 
+      function formatDuration(seconds) {
+        if (!Number.isFinite(seconds) || seconds <= 0) return '--:--';
+        const total = Math.round(seconds);
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        return `${m}:${String(s).padStart(2, '0')}`;
+      }
+
+      function getDurationSec(id) {
+        const v = state.durationsSec[id];
+        return Number.isFinite(v) ? v : null;
+      }
+
+      function getGridItems() {
+        let items = [...state.items];
+        if (state.lenMinSec > 0) {
+          items = items.filter((it) => {
+            const d = getDurationSec(it.id);
+            return d !== null && d >= state.lenMinSec;
+          });
+        }
+
+        if (state.sort === 'lenAsc' || state.sort === 'lenDesc') {
+          const dir = state.sort === 'lenAsc' ? 1 : -1;
+          items.sort((a, b) => {
+            const da = getDurationSec(a.id);
+            const db = getDurationSec(b.id);
+
+            if (da === null && db === null) return 0;
+            if (da === null) return 1;
+            if (db === null) return -1;
+            return (da - db) * dir;
+          });
+        }
+
+        return items;
+      }
+
       function card(item) {
-        const tagF = item.hasFunscript ? `<span class="tag">funscript</span>` : '';
+        const tagF = item.hasFunscript ? `<span class="tag">funscript</span>` : `<span class="tag">no funscript</span>`;
         const tagT = `<span class="tag">${item.mediaType}</span>`;
+
+        const durationTag = item.mediaType === 'video'
+          ? `<span class="tag mvLen" data-id="${item.id}">${formatDuration(getDurationSec(item.id) ?? NaN)}</span>`
+          : '';
+
+        const thumb = item.mediaType === 'image'
+          ? `<img class="thumbMedia" loading="lazy" src="/api/media/${item.id}/stream" alt="${escapeHtml(item.filename)}" />`
+          : `<video class="thumbMedia mvThumbVideo" muted playsinline preload="metadata" data-src="/api/media/${item.id}/stream"></video>`;
+
+        const vrBtn = item.isVr
+          ? `<button class="btn" onclick="window.__openVr('${item.id}')">VR</button>`
+          : '';
+
         return `
           <div class="card">
             <div class="thumb" role="button" tabindex="0" onclick="window.__openPlayer('${item.id}')">
-              <span>Open</span>
+              ${thumb}
+              <div class="thumbOverlay">Open</div>
             </div>
             <div class="meta">
               <div class="name">${escapeHtml(item.filename)}</div>
-              <div class="tags">${tagT}${tagF}</div>
+              <div class="tags">${tagT}${tagF}${durationTag}</div>
               <div class="row">
                 <button class="btn" onclick="window.__openPlayer('${item.id}')">Play</button>
-                <button class="btn" onclick="window.__openVr('${item.id}')">VR</button>
+                ${vrBtn}
               </div>
             </div>
           </div>
@@ -110,15 +274,39 @@
       }
 
       function renderGrid() {
+        const visible = getGridItems();
         el('app').innerHTML = `
           <header>
             <h1>MediaViewer</h1>
             <div class="search"><input id="q" placeholder="Search by filename" value="${escapeHtml(state.q)}" /></div>
+            <select id="pageSize" title="Items per page">
+              ${[12, 24, 48, 96].map((n) => `<option value="${n}" ${n === state.pageSize ? 'selected' : ''}>${n}/page</option>`).join('')}
+            </select>
+            <select id="funFilter" title="Funscript filter">
+              <option value="all" ${state.funFilter === 'all' ? 'selected' : ''}>All videos</option>
+              <option value="with" ${state.funFilter === 'with' ? 'selected' : ''}>With funscript</option>
+              <option value="without" ${state.funFilter === 'without' ? 'selected' : ''}>Without funscript</option>
+            </select>
+            <select id="sort" title="Sort">
+              <option value="newest" ${state.sort === 'newest' ? 'selected' : ''}>Newest</option>
+              <option value="lenAsc" ${state.sort === 'lenAsc' ? 'selected' : ''}>Length (short → long)</option>
+              <option value="lenDesc" ${state.sort === 'lenDesc' ? 'selected' : ''}>Length (long → short)</option>
+            </select>
+            <select id="lenMin" title="Minimum length">
+              <option value="0" ${state.lenMinSec === 0 ? 'selected' : ''}>Any length</option>
+              <option value="120" ${state.lenMinSec === 120 ? 'selected' : ''}>>= 2 min</option>
+              <option value="300" ${state.lenMinSec === 300 ? 'selected' : ''}>>= 5 min</option>
+              <option value="600" ${state.lenMinSec === 600 ? 'selected' : ''}>>= 10 min</option>
+              <option value="1200" ${state.lenMinSec === 1200 ? 'selected' : ''}>>= 20 min</option>
+              <option value="1800" ${state.lenMinSec === 1800 ? 'selected' : ''}>>= 30 min</option>
+            </select>
+            <button class="btn" id="gridDec" title="Smaller grid">-</button>
+            <button class="btn" id="gridInc" title="Larger grid">+</button>
             <button class="btn" id="scan">Rescan</button>
           </header>
           <main>
             <div class="small">${formatPageLabel()}</div>
-            <div class="grid">${state.items.map(card).join('')}</div>
+            <div class="grid" id="grid">${visible.map(card).join('')}</div>
             <div class="pager">
               <button class="btn" id="prev">Prev</button>
               <button class="btn" id="next">Next</button>
@@ -126,10 +314,46 @@
           </main>
         `;
 
+        el('grid').style.setProperty('--card-min', `${state.gridMin}px`);
+
         el('q').addEventListener('input', (e) => {
           const val = e.target.value;
           window.clearTimeout(window.__qT);
           window.__qT = window.setTimeout(() => doSearch(val), 200);
+        });
+
+        el('pageSize').addEventListener('change', async (e) => {
+          state.pageSize = Number(e.target.value) || 48;
+          state.page = 1;
+          await loadList();
+          render();
+        });
+
+        el('funFilter').addEventListener('change', async (e) => {
+          state.funFilter = e.target.value;
+          state.page = 1;
+          await loadList();
+          render();
+        });
+
+        el('sort').addEventListener('change', async (e) => {
+          state.sort = e.target.value;
+          render();
+        });
+
+        el('lenMin').addEventListener('change', async (e) => {
+          state.lenMinSec = Number(e.target.value) || 0;
+          render();
+        });
+
+        el('gridDec').addEventListener('click', () => {
+          state.gridMin = Math.max(120, state.gridMin - 20);
+          el('grid').style.setProperty('--card-min', `${state.gridMin}px`);
+        });
+
+        el('gridInc').addEventListener('click', () => {
+          state.gridMin = Math.min(360, state.gridMin + 20);
+          el('grid').style.setProperty('--card-min', `${state.gridMin}px`);
         });
 
         el('scan').addEventListener('click', async () => {
@@ -156,10 +380,99 @@
           await loadList();
           render();
         });
+
+        initVideoThumbs();
+        prefetchDurationsForPage();
+      }
+
+      async function prefetchDurationsForPage() {
+        const token = ++state._durToken;
+        const ids = state.items
+          .filter((it) => it.mediaType === 'video')
+          .map((it) => it.id)
+          .filter((id) => getDurationSec(id) === null);
+
+        if (!ids.length) return;
+
+        const concurrency = 4;
+        let idx = 0;
+        const workers = Array.from({ length: concurrency }, async () => {
+          while (idx < ids.length) {
+            const id = ids[idx++];
+            if (token !== state._durToken) return;
+            const d = await probeDuration(id);
+            if (token !== state._durToken) return;
+            if (typeof d === 'number' && Number.isFinite(d) && d > 0) {
+              state.durationsSec[id] = d;
+              const tag = document.querySelector(`.mvLen[data-id="${CSS.escape(id)}"]`);
+              if (tag) tag.textContent = formatDuration(d);
+            }
+          }
+        });
+
+        await Promise.all(workers);
+
+        // If sorting/filtering depends on duration, re-render once after probes.
+        if (token === state._durToken && (state.sort !== 'newest' || state.lenMinSec > 0)) {
+          render();
+        }
+      }
+
+      function probeDuration(id) {
+        return new Promise((resolve) => {
+          const v = document.createElement('video');
+          v.preload = 'metadata';
+          v.muted = true;
+          v.playsInline = true;
+          v.src = `/api/media/${id}/stream`;
+
+          const done = (val) => {
+            try {
+              v.removeAttribute('src');
+              v.load();
+            } catch {}
+            resolve(val);
+          };
+
+          v.addEventListener('loadedmetadata', () => done(v.duration), { once: true });
+          v.addEventListener('error', () => done(null), { once: true });
+        });
+      }
+
+      function initVideoThumbs() {
+        const vids = Array.from(document.querySelectorAll('.mvThumbVideo'));
+        if (!vids.length) return;
+
+        const io = new IntersectionObserver((entries) => {
+          for (const ent of entries) {
+            if (!ent.isIntersecting) continue;
+            const v = ent.target;
+            io.unobserve(v);
+
+            const src = v.getAttribute('data-src');
+            if (!src) continue;
+            v.src = src;
+            v.addEventListener('loadeddata', () => {
+              try {
+                // Jump a little forward so we don't always show a black first frame.
+                v.currentTime = 1;
+              } catch {}
+            }, { once: true });
+            v.addEventListener('seeked', () => {
+              v.pause();
+              const overlay = v.parentElement?.querySelector('.thumbOverlay');
+              if (overlay) overlay.classList.add('hidden');
+            }, { once: true });
+          }
+        }, { root: null, rootMargin: '200px', threshold: 0.01 });
+
+        vids.forEach((v) => io.observe(v));
       }
 
       function renderPlayer() {
         const id = state.current?.id;
+        const item = state.current?.item;
+        const vrLink = item?.isVr ? `<a href="#" onclick="window.__openVr('${id}');return false;">Open VR</a>` : '';
         el('app').innerHTML = `
           <header>
             <h1>MediaViewer</h1>
@@ -168,13 +481,31 @@
           <div class="playerWrap">
             <div class="topbar">
               <a href="#" onclick="window.__back();return false;">Back</a>
-              <a href="#" onclick="window.__openVr('${id}');return false;">Open VR</a>
+              ${vrLink}
               <span class="small">${escapeHtml(state.current?.item?.filename || '')}</span>
             </div>
             <video id="v" controls autoplay playsinline src="/api/media/${id}/stream"></video>
             <div class="small" id="fs"></div>
           </div>
         `;
+
+        const v = el('v');
+        const fps = 30;
+        const mediaId = id;
+
+        const push = () => {
+          if (!(v instanceof HTMLVideoElement)) return;
+          const timeMs = Math.round((v.currentTime || 0) * 1000);
+          const frame = Math.max(0, Math.floor((v.currentTime || 0) * fps));
+          sendSyncUpdate({ mediaId, timeMs, paused: v.paused, fps, frame });
+        };
+
+        if (v instanceof HTMLVideoElement) {
+          v.addEventListener('play', push);
+          v.addEventListener('pause', push);
+          v.addEventListener('seeked', push);
+          v.addEventListener('timeupdate', push);
+        }
 
         // Show if funscript exists.
         fetch(`/api/media/${id}/funscript`).then(r => r.ok ? r.json() : null).then((j) => {
@@ -217,11 +548,12 @@
       }
 
       window.__openPlayer = async (id) => {
-        const item = state.items.find((x) => x.id === id);
+        const item = await getItemInfo(id);
         setView('player', { id, item });
+        sendSyncUpdate({ mediaId: id, timeMs: 0, paused: true, fps: 30, frame: 0 });
       };
       window.__openVr = async (id) => {
-        const item = state.items.find((x) => x.id === id);
+        const item = await getItemInfo(id);
         setView('vr', { id, item });
       };
       window.__back = async () => {
@@ -229,6 +561,7 @@
       };
 
       (async () => {
+        connectWs();
         await loadList();
         render();
       })();

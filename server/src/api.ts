@@ -2,15 +2,17 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import express from 'express';
 import mime from 'mime-types';
-import { PrismaClient } from '@prisma/client';
 import { upsertMediaFromDisk } from './mediaScanner.js';
 import { loadFunscriptIfExists } from './funscript.js';
+import type { Db } from './db.js';
+import { newId } from './ids.js';
+import { getSyncPlaybackState, upsertSyncPlaybackState } from './syncState.js';
 
 export function buildApiRouter(opts: {
-  prisma: PrismaClient;
+  db: Db;
   mediaRoot: string;
 }) {
-  const { prisma, mediaRoot } = opts;
+  const { db, mediaRoot } = opts;
   const router = express.Router();
 
   router.get('/health', (_req, res) => {
@@ -18,51 +20,133 @@ export function buildApiRouter(opts: {
   });
 
   router.post('/scan', async (_req, res) => {
-    const result = await upsertMediaFromDisk({ prisma, mediaRoot });
+    const result = await upsertMediaFromDisk({ db, mediaRoot });
     res.json(result);
+  });
+
+  router.get('/sync', async (req, res) => {
+    const sessionId = String(req.query.sessionId ?? 'default').trim() || 'default';
+    const state = await getSyncPlaybackState(db, sessionId);
+    res.json(state);
+  });
+
+  router.put('/sync', express.json(), async (req, res) => {
+    const body = req.body as Partial<{
+      sessionId: string;
+      clientId: string;
+      mediaId: string | null;
+      timeMs: number;
+      paused: boolean;
+      fps: number;
+      frame: number;
+    }>;
+
+    const sessionId = String(body.sessionId ?? 'default').trim() || 'default';
+    const clientId = String(body.clientId ?? '').trim();
+    if (!clientId) return res.status(400).json({ error: 'clientId required' });
+
+    const mediaId = body.mediaId === null ? null : String(body.mediaId ?? '').trim();
+    if (mediaId === '') return res.status(400).json({ error: 'mediaId required (or null)' });
+
+    const timeMs = typeof body.timeMs === 'number' ? body.timeMs : 0;
+    const paused = Boolean(body.paused);
+    const fps = typeof body.fps === 'number' && Number.isFinite(body.fps) ? body.fps : 30;
+    const frame = typeof body.frame === 'number' && Number.isFinite(body.frame) ? body.frame : 0;
+
+    const saved = await upsertSyncPlaybackState(db, {
+      sessionId,
+      mediaId,
+      timeMs,
+      paused,
+      fps,
+      frame,
+      fromClientId: clientId,
+    });
+
+    res.json(saved);
   });
 
   router.get('/media', async (req, res) => {
     const q = String(req.query.q ?? '').trim().toLowerCase();
     const page = Math.max(1, Number(req.query.page ?? 1) || 1);
     const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize ?? 48) || 48));
+    const mediaType = String(req.query.mediaType ?? '').trim();
+    const hasFunscriptParam = String(req.query.hasFunscript ?? '').trim();
 
-    const where = q
-      ? { filename: { contains: q, mode: 'insensitive' as const } }
-      : {};
+    const hasFunscript =
+      hasFunscriptParam === '1' || hasFunscriptParam.toLowerCase() === 'true'
+        ? true
+        : hasFunscriptParam === '0' || hasFunscriptParam.toLowerCase() === 'false'
+          ? false
+          : null;
 
-    const [total, items] = await Promise.all([
-      prisma.mediaItem.count({ where }),
-      prisma.mediaItem.findMany({
-        where,
-        orderBy: [{ modifiedMs: 'desc' }],
-        skip: (page - 1) * pageSize,
-        take: pageSize,
-      }),
-    ]);
+    const offset = (page - 1) * pageSize;
+
+    const whereClauses: string[] = [];
+    const params: Array<string | number | boolean> = [];
+    const add = (value: string | number | boolean) => {
+      params.push(value);
+      return `$${params.length}`;
+    };
+
+    if (q) {
+      whereClauses.push(`filename ILIKE '%' || ${add(q)} || '%'`);
+    }
+    if (mediaType) {
+      whereClauses.push(`media_type = ${add(mediaType)}`);
+    }
+    if (hasFunscript !== null) {
+      whereClauses.push(`has_funscript = ${add(hasFunscript)}`);
+    }
+
+    const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
+    const totalRes = await db.pool.query(
+      `SELECT COUNT(*)::bigint AS total FROM media_items ${whereSql}`,
+      params
+    );
+    const total = Number(totalRes.rows[0]?.total ?? 0);
+
+    const listParams = [...params, pageSize, offset];
+
+    const itemsRes = await db.pool.query(
+      `
+        SELECT id, filename, rel_path, media_type, has_funscript, is_vr, size_bytes, modified_ms
+        FROM media_items
+        ${whereSql}
+        ORDER BY modified_ms DESC
+        LIMIT $${listParams.length - 1} OFFSET $${listParams.length}
+      `,
+      listParams
+    );
 
     res.json({
       total,
       page,
       pageSize,
-      items: items.map((m) => ({
-        id: m.id,
-        filename: m.filename,
-        relPath: m.relPath,
-        mediaType: m.mediaType,
-        hasFunscript: m.hasFunscript,
-        sizeBytes: m.sizeBytes.toString(),
-        modifiedMs: m.modifiedMs.toString(),
+      items: itemsRes.rows.map((m) => ({
+        id: m.id as string,
+        filename: m.filename as string,
+        relPath: m.rel_path as string,
+        mediaType: m.media_type as string,
+        hasFunscript: Boolean(m.has_funscript),
+        isVr: Boolean(m.is_vr),
+        sizeBytes: String(m.size_bytes),
+        modifiedMs: String(m.modified_ms),
       })),
     });
   });
 
   router.get('/media/:id/stream', async (req, res) => {
     const id = req.params.id;
-    const item = await prisma.mediaItem.findUnique({ where: { id } });
+    const itemRes = await db.pool.query(
+      `SELECT rel_path FROM media_items WHERE id = $1 LIMIT 1`,
+      [id]
+    );
+    const item = itemRes.rows[0];
     if (!item) return res.status(404).json({ error: 'Not found' });
 
-    const abs = path.join(mediaRoot, item.relPath);
+    const abs = path.join(mediaRoot, item.rel_path);
     const contentType = mime.lookup(abs) || 'application/octet-stream';
     res.setHeader('Content-Type', contentType);
 
@@ -72,10 +156,14 @@ export function buildApiRouter(opts: {
 
   router.get('/media/:id/funscript', async (req, res) => {
     const id = req.params.id;
-    const item = await prisma.mediaItem.findUnique({ where: { id } });
+    const itemRes = await db.pool.query(
+      `SELECT rel_path FROM media_items WHERE id = $1 LIMIT 1`,
+      [id]
+    );
+    const item = itemRes.rows[0];
     if (!item) return res.status(404).json({ error: 'Not found' });
 
-    const abs = path.join(mediaRoot, item.relPath);
+    const abs = path.join(mediaRoot, item.rel_path);
     const fun = await loadFunscriptIfExists(abs);
     if (!fun) return res.status(404).json({ error: 'No funscript' });
     res.json(fun);
@@ -97,30 +185,33 @@ export function buildApiRouter(opts: {
 
     const fps = typeof body.fps === 'number' && Number.isFinite(body.fps) ? Math.max(1, Math.round(body.fps)) : 30;
 
-    const saved = await prisma.playbackState.upsert({
-      where: { clientId_mediaId: { clientId: body.clientId, mediaId: body.mediaId } },
-      create: {
-        clientId: body.clientId,
-        mediaId: body.mediaId,
-        timeMs: Math.max(0, Math.round(body.timeMs)),
-        fps,
-        frame: Math.max(0, Math.round(body.frame)),
-      },
-      update: {
-        timeMs: Math.max(0, Math.round(body.timeMs)),
-        fps,
-        frame: Math.max(0, Math.round(body.frame)),
-      },
-    });
+    const timeMs = Math.max(0, Math.round(body.timeMs));
+    const frame = Math.max(0, Math.round(body.frame));
+
+    const savedRes = await db.pool.query(
+      `
+        INSERT INTO playback_states (id, client_id, media_id, time_ms, fps, frame, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, now())
+        ON CONFLICT (client_id, media_id)
+        DO UPDATE SET
+          time_ms = EXCLUDED.time_ms,
+          fps = EXCLUDED.fps,
+          frame = EXCLUDED.frame,
+          updated_at = now()
+        RETURNING id, client_id, media_id, time_ms, fps, frame, updated_at
+      `,
+      [newId(), body.clientId, body.mediaId, timeMs, fps, frame]
+    );
+    const saved = savedRes.rows[0];
 
     res.json({
       id: saved.id,
-      clientId: saved.clientId,
-      mediaId: saved.mediaId,
-      timeMs: saved.timeMs,
+      clientId: saved.client_id,
+      mediaId: saved.media_id,
+      timeMs: saved.time_ms,
       fps: saved.fps,
       frame: saved.frame,
-      updatedAt: saved.updatedAt,
+      updatedAt: saved.updated_at,
     });
   });
 
@@ -129,35 +220,44 @@ export function buildApiRouter(opts: {
     const mediaId = String(req.query.mediaId ?? '').trim();
     if (!clientId || !mediaId) return res.status(400).json({ error: 'clientId and mediaId required' });
 
-    const row = await prisma.playbackState.findUnique({
-      where: { clientId_mediaId: { clientId, mediaId } },
-    });
+    const rowRes = await db.pool.query(
+      `SELECT id, client_id, media_id, time_ms, fps, frame, updated_at FROM playback_states WHERE client_id=$1 AND media_id=$2 LIMIT 1`,
+      [clientId, mediaId]
+    );
+    const row = rowRes.rows[0];
 
     if (!row) return res.status(404).json({ error: 'Not found' });
 
     res.json({
       id: row.id,
-      clientId: row.clientId,
-      mediaId: row.mediaId,
-      timeMs: row.timeMs,
+      clientId: row.client_id,
+      mediaId: row.media_id,
+      timeMs: row.time_ms,
       fps: row.fps,
       frame: row.frame,
-      updatedAt: row.updatedAt,
+      updatedAt: row.updated_at,
     });
   });
 
   router.get('/media/:id/fileinfo', async (req, res) => {
     const id = req.params.id;
-    const item = await prisma.mediaItem.findUnique({ where: { id } });
+    const itemRes = await db.pool.query(
+      `SELECT id, filename, rel_path, media_type, has_funscript, is_vr FROM media_items WHERE id = $1 LIMIT 1`,
+      [id]
+    );
+    const item = itemRes.rows[0];
     if (!item) return res.status(404).json({ error: 'Not found' });
 
-    const abs = path.join(mediaRoot, item.relPath);
+    const abs = path.join(mediaRoot, item.rel_path);
     try {
       const stat = await fs.stat(abs);
       res.json({
         id: item.id,
         filename: item.filename,
-        relPath: item.relPath,
+        relPath: item.rel_path,
+        mediaType: item.media_type,
+        hasFunscript: Boolean(item.has_funscript),
+        isVr: Boolean(item.is_vr),
         sizeBytes: stat.size,
         modifiedMs: stat.mtimeMs,
       });

@@ -98,7 +98,13 @@
         funIndex: -1,
         drive: false,
         axis: 'L0',
-        clientId: 'desktop-' + Math.random().toString(16).slice(2)
+        clientId: 'desktop-' + Math.random().toString(16).slice(2),
+        sessionId: 'default',
+        ws: null,
+        wsConnected: false,
+        applyingRemoteUntil: 0,
+        lastSyncSentAt: 0,
+        lastPlaybackPutAt: 0,
       };
 
       const $ = (id) => document.getElementById(id);
@@ -112,6 +118,85 @@
       }
 
       function setStatus(s) { statusEl.textContent = s; }
+
+      function wsUrlFromHttp(httpUrl) {
+        const u = new URL(httpUrl);
+        u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+        u.pathname = '/ws';
+        u.search = '';
+        u.hash = '';
+        return u.toString();
+      }
+
+      function connectWs() {
+        if (state.ws && (state.ws.readyState === 0 || state.ws.readyState === 1)) return;
+        const ws = new WebSocket(wsUrlFromHttp(state.serverUrl));
+        state.ws = ws;
+
+        ws.addEventListener('open', () => {
+          state.wsConnected = true;
+          setStatus('WS connected');
+          ws.send(JSON.stringify({ type: 'sync:hello', clientId: state.clientId, sessionId: state.sessionId }));
+        });
+
+        ws.addEventListener('close', () => {
+          state.wsConnected = false;
+          setStatus('WS disconnected');
+          window.setTimeout(() => connectWs(), 1000);
+        });
+
+        ws.addEventListener('message', (evt) => {
+          let msg;
+          try { msg = JSON.parse(String(evt.data)); } catch { return; }
+          if (!msg || msg.type !== 'sync:state' || !msg.state) return;
+          applyRemoteSyncState(msg.state);
+        });
+      }
+
+      function sendSyncUpdate(update) {
+        if (!state.wsConnected || !state.ws || state.ws.readyState !== 1) return;
+        if (Date.now() < state.applyingRemoteUntil) return;
+        const now = Date.now();
+        if (now - state.lastSyncSentAt < 200) return;
+        state.lastSyncSentAt = now;
+        state.ws.send(JSON.stringify({
+          type: 'sync:update',
+          sessionId: state.sessionId,
+          clientId: state.clientId,
+          ...update,
+        }));
+      }
+
+      async function applyRemoteSyncState(remote) {
+        if (!remote || !remote.mediaId) return;
+        if (remote.fromClientId && remote.fromClientId === state.clientId) return;
+
+        const id = String(remote.mediaId);
+
+        // Follow remote media selection.
+        if (!state.current || state.current.id !== id) {
+          // ensure list contains it or fetch minimal info
+          const it = state.items.find((x) => x.id === id) || { id, filename: id, mediaType: 'video', hasFunscript: false };
+          await openMedia(it.id, { suppressSync: true });
+        }
+
+        const v = $('video');
+        if (!(v instanceof HTMLVideoElement)) return;
+
+        state.applyingRemoteUntil = Date.now() + 800;
+
+        const targetTime = Math.max(0, (Number(remote.timeMs) || 0) / 1000);
+        if (Number.isFinite(v.currentTime) && Math.abs(v.currentTime - targetTime) > 0.5) {
+          try { v.currentTime = targetTime; } catch {}
+        }
+
+        const paused = Boolean(remote.paused);
+        if (paused) {
+          try { v.pause(); } catch {}
+        } else {
+          try { await v.play(); } catch {}
+        }
+      }
 
       function esc(s) {
         return String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;');
@@ -150,13 +235,18 @@
         }
       }
 
-      async function openMedia(id) {
+      async function openMedia(id, opts = {}) {
+        const suppressSync = Boolean(opts.suppressSync);
         const it = state.items.find((x) => x.id === id);
         state.current = it;
         state.funscript = null;
         state.funIndex = -1;
         $('now').textContent = it ? `Now: ${it.filename}` : `Now: ${id}`;
         $('video').src = new URL(`/api/media/${id}/stream`, state.serverUrl).toString();
+
+        if (!suppressSync) {
+          sendSyncUpdate({ mediaId: id, timeMs: 0, paused: true, fps: 30, frame: 0 });
+        }
 
         try {
           state.funscript = await apiJson(`/api/media/${id}/funscript`);
@@ -178,20 +268,26 @@
 
         if (state.current && Number.isFinite(v.currentTime)) {
           $('playback').textContent = `t=${timeMs}ms frame=${frame} fps=${fps}`;
-          // Persist playback state to server.
-          try {
-            await apiJson('/api/playback', {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                clientId: state.clientId,
-                mediaId: state.current.id,
-                timeMs,
-                fps,
-                frame
-              })
-            });
-          } catch {}
+          // Persist playback state to server (throttled).
+          if (Date.now() - state.lastPlaybackPutAt > 1000) {
+            state.lastPlaybackPutAt = Date.now();
+            try {
+              await apiJson('/api/playback', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  clientId: state.clientId,
+                  mediaId: state.current.id,
+                  timeMs,
+                  fps,
+                  frame
+                })
+              });
+            } catch {}
+          }
+
+          // Publish sync state (throttled) so Web UI can follow desktop.
+          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame });
 
           // Drive serial from funscript.
           if (state.drive && state.funscript?.actions?.length) {
@@ -255,8 +351,24 @@
 
       state.serverUrl = $('serverUrl').value;
       setStatus('Ready');
+      connectWs();
       await listPorts();
       await refresh();
+
+      const v = $('video');
+      if (v instanceof HTMLVideoElement) {
+        const fps = 30;
+        const push = () => {
+          if (!state.current) return;
+          const timeMs = Math.round((v.currentTime || 0) * 1000);
+          const frame = currentFrame(v.currentTime || 0, fps);
+          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame });
+        };
+        v.addEventListener('play', push);
+        v.addEventListener('pause', push);
+        v.addEventListener('seeked', push);
+      }
+
       tick();
     </script>
   </body>

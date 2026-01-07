@@ -7,17 +7,35 @@
   "scripts": {
     "dev": "npm run build && electron dist/main.js",
     "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
-    "start": "electron dist/main.js"
+    "start": "electron dist/main.js",
+    "package:win": "npm run build && electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.mediaviewer.desktop",
+    "productName": "MediaViewer",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "portable"
+      ]
+    }
   },
   "dependencies": {
     "@electron/remote": "^2.1.2",
-    "electron": "^30.0.9",
     "node-fetch": "^3.3.2",
     "serialport": "^12.0.0",
     "ws": "^8.18.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "electron": "^30.0.9",
+    "electron-builder": "^24.13.3",
     "@types/node": "^20.14.10",
     "tsx": "^4.16.2",
     "typescript": "^5.5.4"
