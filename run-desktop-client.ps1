@@ -1,5 +1,6 @@
 param(
-  [string]$ServerUrl = "http://localhost:3000"
+  [string]$ServerUrl = "http://localhost:3000",
+  [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,10 +19,12 @@ if (-not (Test-Path "node_modules")) {
   npm install
 }
 
-if (-not (Test-Path "dist\main.js")) {
-  Write-Host "dist missing; running npm run build" -ForegroundColor Yellow
+if (-not $SkipBuild) {
+  Write-Host "Building desktop client..." -ForegroundColor DarkGray
   npm run build
 }
 
 $env:SERVER_URL = $ServerUrl
-npm run start
+
+# Launch Electron directly (avoids npm cwd/script resolution issues).
+& "$clientDir\node_modules\.bin\electron.cmd" "$clientDir\dist\main.js"

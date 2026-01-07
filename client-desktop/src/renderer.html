@@ -9,8 +9,9 @@
       body { margin: 0; font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; background: #0b0c0f; color: #e6e6e6; }
       header { padding: 12px 16px; border-bottom: 1px solid #222; display: flex; gap: 12px; align-items: center; justify-content: space-between; }
       header h1 { font-size: 14px; margin: 0; }
-      .wrap { display: grid; grid-template-columns: 380px 1fr; height: calc(100vh - 50px); }
+      .wrap { display: grid; grid-template-columns: 380px 380px 1fr; height: calc(100vh - 50px); }
       .left { border-right: 1px solid #222; padding: 12px; overflow: auto; display: grid; gap: 12px; }
+      .middle { border-right: 1px solid #222; padding: 12px; overflow: auto; display: grid; gap: 12px; }
       .right { padding: 12px; overflow: auto; display: grid; gap: 10px; }
       .row { display: flex; gap: 8px; align-items: center; }
       input, select { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #2a2f3a; background: #11131a; color: #e6e6e6; }
@@ -54,24 +55,7 @@
                 <button id="applyServer" style="max-width: 120px;">Apply</button>
               </div>
             </div>
-            <div class="grid2">
-              <div>
-                <div class="small">Search</div>
-                <input id="q" placeholder="filename" />
-              </div>
-              <div>
-                <div class="small">Paging</div>
-                <div class="row">
-                  <button id="prev" style="max-width: 90px;">Prev</button>
-                  <button id="next" style="max-width: 90px;">Next</button>
-                  <div class="small" id="pageLabel" style="white-space: nowrap;"></div>
-                </div>
-              </div>
-            </div>
-            <div class="row">
-              <button id="refresh" style="max-width: 120px;">Refresh</button>
-              <div class="small" id="status"></div>
-            </div>
+            <div class="row"><div class="small" id="status"></div></div>
           </div>
         </div>
 
@@ -109,21 +93,51 @@
         </div>
       </div>
 
+      <div class="middle">
+        <div class="card">
+          <h2>Media</h2>
+          <div class="stack">
+            <div class="grid2">
+              <div>
+                <div class="small">Search</div>
+                <input id="q" placeholder="filename" />
+              </div>
+              <div>
+                <div class="small">Paging</div>
+                <div class="row">
+                  <button id="prev" style="max-width: 90px;">Prev</button>
+                  <button id="next" style="max-width: 90px;">Next</button>
+                  <div class="small" id="pageLabel" style="white-space: nowrap;"></div>
+                </div>
+              </div>
+            </div>
+            <div class="row">
+              <button id="refresh" style="max-width: 120px;">Refresh</button>
+              <div class="small"></div>
+            </div>
+            <div class="list" id="list"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="right">
         <div class="row" style="justify-content: space-between; gap: 12px; flex-wrap: wrap;">
           <div class="small" id="now"></div>
           <div class="row" style="gap: 8px;">
             <button id="btnPlayPause" style="max-width: 140px;">Play/Pause</button>
+            <button id="btnVideo" style="max-width: 140px;">Video: ON</button>
             <button id="btnFollow" style="max-width: 220px;">Follow remote: ON</button>
           </div>
         </div>
-        <video id="video" controls></video>
-        <div class="small" id="playback"></div>
 
-        <div class="card">
-          <h2>Media</h2>
-          <div class="list" id="list"></div>
+        <div class="row" style="justify-content: flex-end; gap: 8px; flex-wrap: wrap;">
+          <div class="small" style="white-space: nowrap;">Follow source</div>
+          <select id="followSource" style="max-width: 260px;"></select>
         </div>
+
+        <video id="video" controls></video>
+        <div class="small" id="noVideoHint" style="display:none;">No-video mode: using sync playback time only (no /stream requests).</div>
+        <div class="small" id="playback"></div>
       </div>
     </div>
 
@@ -148,7 +162,15 @@
         lastSyncSentAt: 0,
         lastPlaybackPutAt: 0,
         followRemote: true,
+        noVideo: false,
+        remoteTimeMs: 0,
+        remotePaused: true,
+        remoteFps: 30,
+        remoteLastUpdateAt: 0,
         serialConnected: false,
+
+        followSource: 'any',
+        seenSources: new Map(),
       };
 
       const $ = (id) => document.getElementById(id);
@@ -193,6 +215,8 @@
             if (typeof p.axis === 'string') state.axis = p.axis;
             if (typeof p.drive === 'boolean') state.drive = p.drive;
             if (typeof p.followRemote === 'boolean') state.followRemote = p.followRemote;
+            if (typeof p.noVideo === 'boolean') state.noVideo = p.noVideo;
+            if (typeof p.followSource === 'string') state.followSource = p.followSource;
           }
         } catch {}
       }
@@ -203,7 +227,57 @@
           axis: state.axis,
           drive: state.drive,
           followRemote: state.followRemote,
+          noVideo: state.noVideo,
+          followSource: state.followSource,
         }));
+      }
+
+      function labelForSource(id) {
+        if (!id) return 'Any';
+        if (id === 'any') return 'Any';
+        return id;
+      }
+
+      function updateFollowSourceOptions() {
+        const sel = $('followSource');
+        if (!(sel instanceof HTMLSelectElement)) return;
+
+        const entries = Array.from(state.seenSources.entries())
+          .sort((a, b) => b[1] - a[1])
+          .map(([id]) => id);
+
+        const opts = ['any', ...entries];
+        sel.innerHTML = opts
+          .map((id) => `<option value="${esc(id)}" ${id === state.followSource ? 'selected' : ''}>${esc(labelForSource(id))}</option>`)
+          .join('');
+
+        if (!opts.includes(state.followSource)) {
+          state.followSource = 'any';
+          savePrefs();
+          sel.value = 'any';
+        }
+      }
+
+      function setVideoModeUi() {
+        $('btnVideo').textContent = state.noVideo ? 'Video: OFF' : 'Video: ON';
+        $('btnPlayPause').disabled = state.noVideo;
+
+        const v = $('video');
+        if (v instanceof HTMLVideoElement) {
+          v.style.display = state.noVideo ? 'none' : '';
+        }
+
+        const hint = $('noVideoHint');
+        if (hint) hint.style.display = state.noVideo ? '' : 'none';
+
+        if (state.noVideo && v instanceof HTMLVideoElement) {
+          // Ensure we don't keep any active stream.
+          try {
+            v.pause();
+            v.removeAttribute('src');
+            v.load();
+          } catch {}
+        }
       }
 
       function wsUrlFromHttp(httpUrl) {
@@ -238,6 +312,13 @@
           let msg;
           try { msg = JSON.parse(String(evt.data)); } catch { return; }
           if (!msg || msg.type !== 'sync:state' || !msg.state) return;
+
+          const src = String(msg.state.fromClientId || '');
+          if (src && src !== state.clientId) {
+            state.seenSources.set(src, Date.now());
+            updateFollowSourceOptions();
+          }
+
           applyRemoteSyncState(msg.state);
         });
       }
@@ -261,6 +342,10 @@
         if (!remote || !remote.mediaId) return;
         if (remote.fromClientId && remote.fromClientId === state.clientId) return;
 
+        if (state.followSource && state.followSource !== 'any') {
+          if (String(remote.fromClientId || '') !== state.followSource) return;
+        }
+
         const id = String(remote.mediaId);
 
         // Follow remote media selection.
@@ -270,18 +355,24 @@
           await openMedia(it.id, { suppressSync: true });
         }
 
+        state.applyingRemoteUntil = Date.now() + 800;
+        state.remoteTimeMs = Math.max(0, Math.round(Number(remote.timeMs) || 0));
+        state.remotePaused = Boolean(remote.paused);
+        state.remoteFps = Math.max(1, Math.round(Number(remote.fps) || 30));
+        state.remoteLastUpdateAt = Date.now();
+
+        // In no-video mode, do not load/control the stream.
+        if (state.noVideo) return;
+
         const v = $('video');
         if (!(v instanceof HTMLVideoElement)) return;
 
-        state.applyingRemoteUntil = Date.now() + 800;
-
-        const targetTime = Math.max(0, (Number(remote.timeMs) || 0) / 1000);
+        const targetTime = Math.max(0, state.remoteTimeMs / 1000);
         if (Number.isFinite(v.currentTime) && Math.abs(v.currentTime - targetTime) > 0.5) {
           try { v.currentTime = targetTime; } catch {}
         }
 
-        const paused = Boolean(remote.paused);
-        if (paused) {
+        if (state.remotePaused) {
           try { v.pause(); } catch {}
         } else {
           try { await v.play(); } catch {}
@@ -333,7 +424,19 @@
         state.funscript = null;
         state.funIndex = -1;
         $('now').textContent = it ? `Now: ${it.filename}` : `Now: ${id}`;
-        $('video').src = new URL(`/api/media/${id}/stream`, state.serverUrl).toString();
+
+        const v = $('video');
+        if (v instanceof HTMLVideoElement) {
+          if (state.noVideo) {
+            try {
+              v.pause();
+              v.removeAttribute('src');
+              v.load();
+            } catch {}
+          } else {
+            v.src = new URL(`/api/media/${id}/stream`, state.serverUrl).toString();
+          }
+        }
 
         if (!suppressSync && !state.followRemote) {
           sendSyncUpdate({ mediaId: id, timeMs: 0, paused: true, fps: 30, frame: 0 });
@@ -356,34 +459,51 @@
 
       async function tick() {
         const v = $('video');
-        const fps = 30;
-        const timeMs = Math.round(v.currentTime * 1000);
-        const frame = currentFrame(v.currentTime, fps);
+        const fps = state.noVideo ? (state.remoteFps || 30) : 30;
 
-        if (state.current && Number.isFinite(v.currentTime)) {
+        let timeMs = 0;
+        let paused = true;
+
+        if (!state.noVideo && v instanceof HTMLVideoElement) {
+          timeMs = Math.round((v.currentTime || 0) * 1000);
+          paused = Boolean(v.paused);
+        } else if (state.noVideo && state.followRemote) {
+          const base = state.remoteTimeMs || 0;
+          paused = Boolean(state.remotePaused);
+          if (paused) timeMs = base;
+          else timeMs = base + Math.max(0, Date.now() - (state.remoteLastUpdateAt || Date.now()));
+        }
+
+        const frame = currentFrame(timeMs / 1000, fps);
+
+        const canReport = Boolean(state.current) && (!state.noVideo ? (v instanceof HTMLVideoElement && Number.isFinite(v.currentTime)) : state.followRemote);
+
+        if (canReport) {
           $('playback').textContent = `t=${timeMs}ms frame=${frame} fps=${fps}`;
-          // Persist playback state to server (throttled).
-          if (Date.now() - state.lastPlaybackPutAt > 1000) {
-            state.lastPlaybackPutAt = Date.now();
-            try {
-              await apiJson('/api/playback', {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  clientId: state.clientId,
-                  mediaId: state.current.id,
-                  timeMs,
-                  fps,
-                  frame
-                })
-              });
-            } catch {}
+          // Persist playback state only when playing the stream locally.
+          if (!state.noVideo) {
+            if (Date.now() - state.lastPlaybackPutAt > 1000) {
+              state.lastPlaybackPutAt = Date.now();
+              try {
+                await apiJson('/api/playback', {
+                  method: 'PUT',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    clientId: state.clientId,
+                    mediaId: state.current.id,
+                    timeMs,
+                    fps,
+                    frame
+                  })
+                });
+              } catch {}
+            }
           }
 
           // Publish sync state only when we're the "driver".
           // If followRemote is ON, publishing our paused=true back would fight the web player.
-          if (!state.followRemote) {
-            sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame });
+          if (!state.followRemote && !state.noVideo) {
+            sendSyncUpdate({ mediaId: state.current.id, timeMs, paused, fps, frame });
           }
 
           // Drive serial from funscript.
@@ -482,10 +602,22 @@
       $('btnPlayPause').addEventListener('click', async () => {
         const v = $('video');
         if (!(v instanceof HTMLVideoElement)) return;
+        if (state.noVideo) return;
         if (v.paused) {
           try { await v.play(); } catch {}
         } else {
           try { v.pause(); } catch {}
+        }
+      });
+
+      $('btnVideo').addEventListener('click', () => {
+        state.noVideo = !state.noVideo;
+        savePrefs();
+        setVideoModeUi();
+
+        // If turning video back on and we have a current item, reload the stream.
+        if (!state.noVideo && state.current?.id) {
+          openMedia(state.current.id, { suppressSync: true });
         }
       });
 
@@ -506,6 +638,11 @@
         }
       });
 
+      $('followSource').addEventListener('change', () => {
+        state.followSource = String($('followSource').value || 'any');
+        savePrefs();
+      });
+
       loadPrefs();
       $('serverUrl').value = state.serverUrl;
 
@@ -523,6 +660,9 @@
 
       $('toggleDrive').textContent = state.drive ? 'Drive: ON' : 'Drive: OFF';
       $('btnFollow').textContent = state.followRemote ? 'Follow remote: ON' : 'Follow remote: OFF';
+
+      setVideoModeUi();
+      updateFollowSourceOptions();
 
       setWsPill(false);
       setSerialPill(false);
