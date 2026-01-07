@@ -45,7 +45,7 @@
     <header>
       <h1>MediaViewer Desktop</h1>
       <div class="kpi">
-        <span class="pill" id="wsPill">WS: —</span>
+        <span class="pill" id="wsPill">Server: —</span>
         <span class="pill" id="serialPill">Serial: —</span>
         <span class="pill" id="drivePill">Drive: OFF</span>
         <span class="pill" id="fsPill">Funscript: —</span>
@@ -378,7 +378,7 @@
       function setStatus(s) { statusEl.textContent = s; }
 
       function setWsPill(connected) {
-        wsPill.textContent = connected ? 'WS: connected' : 'WS: disconnected';
+        wsPill.textContent = connected ? 'Server: connected' : 'Server: disconnected';
         wsPill.className = connected ? 'pill connected' : 'pill disconnected';
       }
 
@@ -389,12 +389,18 @@
 
       function setDrivePill() {
         drivePill.textContent = state.drive ? 'Drive: ON' : 'Drive: OFF';
+        drivePill.className = state.drive ? 'pill connected' : 'pill disconnected';
       }
 
       function setFsPill() {
         const n = state.funscript?.actions?.length;
-        if (typeof n === 'number') fsPill.textContent = `Funscript: ${n} actions`;
-        else fsPill.textContent = 'Funscript: —';
+        if (typeof n === 'number') {
+          fsPill.textContent = `Funscript: ${n} actions`;
+          fsPill.className = 'pill connected';
+        } else {
+          fsPill.textContent = 'Funscript: —';
+          fsPill.className = 'pill disconnected';
+        }
       }
 
       function loadPrefs() {
