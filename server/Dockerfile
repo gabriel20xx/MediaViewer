@@ -42,6 +42,10 @@ RUN npm prune --omit=dev
 COPY --from=build --chown=node:node /app/public ./public
 COPY --from=build --chown=node:node /app/dist ./dist
 
+# Writable cache dir for thumbnails if configured to use /app/cache
+RUN mkdir -p /app/cache/thumbs \
+	&& chown -R node:node /app/cache
+
 EXPOSE 3000
 
 USER node

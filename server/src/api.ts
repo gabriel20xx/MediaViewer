@@ -233,9 +233,10 @@ export function buildApiRouter(opts: {
       res.setHeader('Content-Type', 'image/jpeg');
       return res.sendFile(thumbPath);
     } catch (e) {
-      // Fallback to error or empty
-      console.error('Thumb gen failed:', e);
-      return res.status(500).send('Thumbnail generation failed');
+      // Fallback to a lightweight placeholder instead of failing the UI.
+      // (Also avoids repeated expensive retries; generator caches failures briefly.)
+      console.warn('Thumb gen failed:', e);
+      return res.redirect(302, `/thumb/${encodeURIComponent(id)}.svg`);
     }
   });
 

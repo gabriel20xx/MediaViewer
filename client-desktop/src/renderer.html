@@ -1239,6 +1239,12 @@
         savePrefs();
         state.funIndex = -1;
         updateFunscriptUi(state.lastFunscriptValue);
+
+        try {
+          if (window.mv && typeof window.mv.setKeepAwake === 'function') {
+            window.mv.setKeepAwake(state.drive);
+          }
+        } catch {}
       });
 
       $('autoHomeEnabled').addEventListener('change', () => {
@@ -1442,6 +1448,12 @@
 
       loadPrefs();
       $('serverUrl').value = state.serverUrl;
+
+      try {
+        if (window.mv && typeof window.mv.setKeepAwake === 'function') {
+          window.mv.setKeepAwake(state.drive);
+        }
+      } catch {}
 
       // Init axis dropdown
       const common = ['L0','L1','L2','L3'];
