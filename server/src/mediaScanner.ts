@@ -40,6 +40,12 @@ function isVrFromRelPath(relPath: string): boolean {
   const hasFov =
     hasToken(/(^|[\/\s._-])(180|360)([\/\s._-]|$)/) || s.includes('vr180') || s.includes('vr360');
 
+  // Some libraries use tags like "_LRF_Full_SBS" without an explicit 180/360 token.
+  // Treat this as VR if we have strong stereo + LRF signals.
+  const hasLrf = hasToken(/(^|[\/\s._-])lrf([\/\s._-]|$)/);
+  const hasFull = hasToken(/(^|[\/\s._-])full([\/\s._-]|$)/);
+  if (hasLrf && hasFull && hasStereo) return true;
+
   // Heuristic: VR videos almost always have an FOV token, and frequently stereo.
   // Require a reasonably strong signal to avoid false positives.
   if (hasFov && (hasStereo || hasVrWord)) return true;

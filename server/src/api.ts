@@ -235,8 +235,19 @@ export function buildApiRouter(opts: {
     } catch (e) {
       // Fallback to a lightweight placeholder instead of failing the UI.
       // (Also avoids repeated expensive retries; generator caches failures briefly.)
-      console.warn('Thumb gen failed:', e);
-      return res.redirect(302, `/thumb/${encodeURIComponent(id)}.svg`);
+      const msg = e instanceof Error ? e.message : String(e);
+
+      // Avoid log spam when we already have a recent failure marker.
+      if (!msg.includes('thumbnail previously failed recently')) {
+        if (msg.includes('moov atom not found') || msg.includes('Invalid data found when processing input')) {
+          console.warn(`Thumb gen failed for ${id}: Not able to load preview (invalid/corrupt media)`);
+        } else {
+          console.warn(`Thumb gen failed for ${id}: ${String(msg).split('\n')[0]}`);
+        }
+      }
+
+      // Signal "preview unavailable" to the placeholder SVG.
+      return res.redirect(302, `/thumb/${encodeURIComponent(id)}.svg?err=1`);
     }
   });
 

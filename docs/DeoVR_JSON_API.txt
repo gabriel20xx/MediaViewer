@@ -1,0 +1,919 @@
+﻿DeoVR App documentation
+
+1. How to configure servers
+
+The easiest way to stream video on demand (VoD) is to use progressive HTTP streaming which doesn't require any additional or special web server configuration. DeoVR player will download video header and based on this information will send HTTP Range requests to the web server in order to download necessary parts of the video file.
+
+HTTPS is required to ensure compatibility with all Android versions.
+
+Just upload your video files to the public folder of your Web Server and if you encoded your video right it should work without any additional server configuration.
+
+There are 2 downsides of this method:
+
+- No seamless quality change based on a user internet speed
+
+- Users will be able to download your videos using a direct link.
+
+2. Video encoding basics
+
+TBC. We will be updating and expanding this section soon. Until then, you can read about the new AV1 codec here. 
+
+3.Playback video codecs
+
+Windows OS requires correct video codecs installed for DeoVR playback to work. 
+App player can work with any of these codecs:
+
+- LAVFilters
+
+- HEVC Video Extension
+
+Make sure to install at least one.
+
+Quest 3S/3 headsets support the new AV1 codec. We are looking into AV1 support for the DeoVR Windows app and will report back. 
+
+4. Intro to the integration
+
+There are two ways to integrate DeoVR into the site.
+
+A. Single video deeplink
+A file .json with the description of one video is uploaded on the server. Then a button is added to the site. Once deeplink button is clicked, DeoVR launches and starts the video from this file. The video is played immediately.
+
+B. Multiple videos selection
+
+Called from DeoVR browser
+Single .json file containing the list of videos is uploaded on the server. Then, in DeoVR “Internet browser” user calls the site (e.g. www.deovr.com) and gets access to the Selection Scene where they can choose a video from a list.
+
+Called from a deeplink on the site
+Single .json file containing the list of videos is uploaded on the server. Then a button with a deeplink to this file (e.g. “deovr://https://www.deovr.com/something.json”) is added to the site. By opening the site in a browser and clicking on the deeplink button, DeoVR launches and shows the user Selection Scene.
+
+You can either implement just one integration, or both in the same time.
+
+5. Single video deeplink formatting
+
+IMPORTANT!
+DeoVR saves settings for videos internally, title will be the title of the video, but if you want to send multiple videos with same title—use ID to distinct between them.
+
+"title": "ExampleVideo"
+"id": 555
+1. Resolutions
+Create a list of "videoSources". Set the URL and resolution for each video source.
+
+"videoSources":
+[
+{
+"resolution": 1080,
+"url": "C:/JsonExampleVideos/ExampleVideo_1080p.mp4"
+},
+{
+"resolution": 1440,
+"url": "C:/JsonExampleVideos/ExampleVideo_1440p.mp4"
+}
+]
+2. Video preview
+You can add a video file which will be used to show the rewind of the file in the player.
+
+"videoThumbnail":"https://yoursite.com/ExampleVideo_SeekLookUp.mp4"
+The video should be in a low resolution as well as with low fps in order to save resources. In DeoVR for mobile devices this function may be unavailable.
+
+3. Neccessary thumbnail and preview (optional) in case of playing from Selection Scene
+In case of playing this video from the list, it is necessary to add the following lines:
+
+"videoPreview":"https://yoursite.com/ExampleVideo_Preview.mp4"
+"thumbnailUrl":"https://yoursite.com/ExampleVideo_Thumbnail.jpg"
+The field ‘videoPreview’ contains the link to the video file, which is shown when moving the cursor to this video in the list. This field is not required.
+
+The field ‘thumbnailUrl’ should contain the link to the file with the image shown in the list. This field is required in case of using the list.
+
+4. Timestamps
+Create a new list of "timeStamps". Each time stamp has time in seconds and a name value.
+
+"timeStamps":
+[
+{
+"ts": 15,
+"name": "Rabbit jumps"
+},
+{
+"ts": 30,
+"name": "Rabbit Sleeps"
+}
+]
+IMPORTANT!
+For correct work of timeStamps you should also specify length of the video in seconds, otherwise unnecessary.
+
+"videoLength": 60
+5. Corrections
+Declare "corrections" and set horizontal ("x") or vertical ("y") offset [min -7.5, max 7.5], brightness ("br"), contrast ("cont") or saturation ("sat") values [min -70, max 70].
+
+"corrections":
+{
+"x": 5,
+"y": -5,
+"br": -10,
+"cont": 10,
+"sat": 20
+}
+6. Other
+"stereoMode" can be set to "sbs" for side by side stereoscopic layout, "tb" for top-bottom layout, "cuv" for custom UV layout (currently only used for Canon RF52 lens) or "off" for monoscopic videos.
+
+"stereoMode": "tb"
+You can set type of the mesh in "screenType" field if video data json.
+Use the following values to adjust it:
+
+"screenType": "sphere"
+
+- "flat" - flat 2d video
+
+- "dome" - 180 degrees equirect mesh
+
+- "sphere" - 360 degrees equirect mesh
+
+- "fisheye" - 180 degrees fisheye mesh
+
+- "mkx200" - 200 degrees fisheye mesh
+
+- "rf52" - 190 degrees Canon fisheye mesh
+
+7. Full JSON example
+
+{
+"encodings":[
+{
+"name":"h264",
+"videoSources":[
+{
+"resolution":1080,
+"url":"https://yoursite.com/ExampleVideo_1080p.mp4"
+},
+{
+"resolution":1440,
+"url":"https://yoursite.com/ExampleVideo_1440p.mp4"
+},
+{
+"resolution":1920,
+"url":"https://yoursite.com/ExampleVideo_1920p.mp4"
+},
+{
+"resolution":2160,
+"url":"https://yoursite.com/ExampleVideo_2160p.mp4"
+},
+{
+"resolution":2880,
+"url":"https://yoursite.com/ExampleVideo_2880p.mp4"
+},
+{
+"resolution":3360,
+"url":"https://yoursite.com/ExampleVideo_3360p.mp4"
+},
+{
+"resolution":3840,
+"url":"https://yoursite.com/ExampleVideo_3840p.mp4"
+}
+]
+}
+],
+"title":"ExampleVideo",
+"id":123,
+"videoLength":60,
+"is3d":true,
+"screenType":"sphere",
+"stereoMode":"tb",
+"skipIntro":0,
+"videoThumbnail":"https://yoursite.com/ExampleVideo_SeekLookUp.mp4",
+"videoPreview":"https://yoursite.com/ExampleVideo_Preview.mp4",
+"thumbnailUrl":"https://yoursite.com/ExampleVideo_image.jpg",
+"timeStamps":[
+{
+"ts":15,
+"name":"Wall"
+},
+{
+"ts":30,
+"name":"Window"
+},
+{
+"ts":45,
+"name":"Door"
+}
+],
+"corrections":{
+"x":5,
+"y":-5,
+"br":-10,
+"cont":10,
+"sat":20
+}
+}
+IMPORTANT!
+“is3d” should always be true, in case of false video will be forced monoscopic.
+
+6. Multiple videos selection deeplink (Selection Scene)
+
+Json file contains the a collection of single videos (see Single Video Deeplink). You can create multiple scenes which will be displayed as the tabs below the interface in Selection Scene.
+
+Json file should contain at least one scene. Each scene corresponds with its own list of videos. An example of list of scenes format:
+
+{
+"scenes":[
+{
+"name":"Trailers",
+"list":[
+… description of video as in single video deeplink …
+]
+},
+{
+"name":"Full Videos",
+"list":[
+… description of video as in single video deeplink …
+]
+}
+],
+"authorized":"0"
+}
+In that case, two scenes named «Trailers» and «Full Videos» will be created.
+
+An example of a full file with one scene and two videos:
+
+{
+"scenes":[
+{
+"name":"Library",
+"list":[
+{
+"encodings":[
+{
+"name":"h264",
+"videoSources":[
+{
+"resolution":1080,
+"url":"https://yoursite.com/ExampleVideo_1080p.mp4"
+},
+{
+"resolution":1440,
+"url":"https://yoursite.com/ExampleVideo_1440p.mp4"
+}
+]
+}
+],
+"title":"ExampleVideo1",
+"screenType":"sphere",
+"stereoMode":"tb",
+"skipIntro":0,
+"videoThumbnail":"https://yoursite.com/ExampleVideo1_SeekLookUp.mp4",
+"videoPreview":"https://yoursite.com/ExampleVideo1_Preview.mp4",
+"thumbnailUrl":"https://yoursite.com/ExampleVideo1_image.jpg",
+"timeStamps":[
+{
+"ts":15,
+"name":"Wall"
+}
+],
+"corrections":{
+"x":5,
+"y":-5,
+"br":-10,
+"cont":10,
+"sat":20
+},
+"is3d":true,
+"videoLength":60,
+"id":123
+},
+{
+"encodings":[
+{
+"name":"h264",
+"videoSources":[
+{
+"resolution":1080,
+"url":"https://yoursite.com/ExampleVideo2_1080p.mp4"
+},
+{
+"resolution":1440,
+"url":"https://yoursite.com/ExampleVideo2_1440p.mp4"
+}
+]
+}
+],
+"title":"ExampleVideo2",
+"screenType":"sphere",
+"stereoMode":"tb",
+"skipIntro":0,
+"videoThumbnail":"https://yoursite.com/ExampleVideo2_SeekLookUp.mp4",
+"videoPreview":"https://yoursite.com/ExampleVideo2_Preview.mp4",
+"thumbnailUrl":"https://yoursite.com/ExampleVideo2_image.jpg",
+"timeStamps":[
+{
+"ts":15,
+"name":"Wall"
+}
+],
+"corrections":{
+"x":3,
+"y":-3,
+"br":-5,
+"cont":5,
+"sat":10
+},
+"is3d":true,
+"videoLength":65,
+"id":234
+}
+]
+}
+],
+"authorized":"0"
+}
+If the list of videos is too big, you can use shortened format.
+In this case, instead of all fields required for the video to be played, only four fields are used with an addition of the field ‘video_url’, which contains Json to the full description of each video (see Single Video Deeplink).
+
+The required fields of shortened format:
+
+- thumbnailUrl - the address of the picture of the thumbnail;
+
+- title – the title of the video;
+
+- videoLength – the length of the video (in seconds);
+
+- video_url – the address of Json with the description of the video
+
+Example:
+
+{
+"scenes":[
+{
+"name":"Library",
+"list":[
+{
+"title":"Play with a pretty dog",
+"videoLength":79,
+"thumbnailUrl":"https://deovr.com/s/images/feed/thumb1.png",
+"video_url":"https://deovr.com/deovr/video/id/1"
+},
+{
+"title":"Bikini car wash",
+"videoLength":242,
+"thumbnailUrl":"https://deovr.com/s/images/feed/thumb2.png",
+"video_url":"https://deovr.com/deovr/video/id/2"
+},
+{
+"title":"Date with a girl",
+"videoLength":401,
+"thumbnailUrl":"https:\/\/deovr.com\/s\/images\/feed\/thumb3.png",
+"video_url":"https://deovr.com/deovr/video/id/2"
+}
+]
+}
+]
+}
+Choosing of .json file name for DeoVR
+If you want your site to be accessible from DeoVR Browser with the link as «http://www.yoursite.com», put file ‘deovr’ (without extension and quotes) into the root directory of the server.
+When following a link containing only domain name, DeoVR will request the data at the address «http://www.yoursite.com/deovr».
+In case calling any other URL, e.g. «http://www.yoursite.com/video/test» the request will be made at the same link without changes. The result of the server response should be a .json with a list of video description.
+
+Authorization in DeoVR
+In case of transferring login, the result of server response should also contain field “authorized” with the following values:
+1 — user is successfully authorized;
+0 — user without an account;
+-1 — authorization error.
+In case of authorization error, DeoVR shows the following message: «Invalid login or password!».
+If authorization is not used, the field is not required or its value should equal to 0.
+
+In case of authorization attempt, the current link with .json file (both the list and the video) will be opened through POST request method. Fields ‘login’ and ‘password’ will respective data entered by user. The result of the authorization should be reflected in the field ‘authorized’ of .json described earlier.
+In case of using authorization, ‘login’ and ‘password’ will be transferred to the requests of obtaining scenes, as well as to the requests of video description.
+
+7. Images Support
+
+To provide user a feed of images (instead of videos), you must pass an image path (link to the image) in to the "path" variable instead of encoding classes. For StereoMode, ScreenType you can set screenType and stereoMode parameters or specify flags directly in the image file names.
+
+Example:
+
+{
+"scenes":[
+{
+"name":"Library",
+"list":[
+{
+"path":"https://yoursite.com/picture1_tb_360.jpg",
+"title":"ExamplePicture1",
+"screenType":"sphere",
+"stereoMode":"tb",
+"thumbnailUrl":"https://yoursite.com/thumbnail_picture1.jpg",
+"corrections":{
+"x":5,
+"y":-5,
+"br":-10,
+"cont":10,
+"sat":20
+},
+"is3d":true,
+"id":123
+},
+{
+"path":"https://yoursite.com/picture2_sbs_360.jpg",
+"title":"ExamplePicture2",
+"screenType":"sphere",
+"stereoMode":"sbs",
+"thumbnailUrl":"https://yoursite.com/thumbnail_picture2.jpg",
+"is3d":true,
+"videoLength":65,
+"id":234
+}
+]
+}
+],
+"authorized":"0"
+}
+
+8. Remote control
+
+This guide will demonstrate you how remote control works. You can find a simple remote control client app with a source code here:
+
+https://deovr.com/s/DeoRemoteControlTest.zip
+
+The client is written in C# Windows Forms.
+
+Preparing DeoVR:
+
+- Launch DeoVR app
+
+- Open settings menu in selection scene or file browser ("gear in right top corner")
+
+- Toggle switch "Enable remote control"
+
+- On Windows you will get notification from the firewall. Please confirm incoming connections
+
+- Start any video from selection scene or file browser.
+
+Preparing Remote Control Client
+
+- Unpack and launch DeoRemoteControlTest app
+
+- If you started it on the same PC with DeoVR, click “Connect”, otherwise you should specify DeoVR IP address first
+
+- After connection established you will get message “Client connected”, after this you will start to receive data from DeoVR app
+
+- While you’re in the video, you will receive:
+
+- Path to the video file
+
+- Player state (could be play or pause)
+
+- Current video time
+
+- And current playback speed
+
+- You will be able to send to DeoVR:
+
+- New video path (new video are going to be opened immediately in DeoVR)
+
+- SeekTo value (will set new video time)
+
+- Playback speed (will change current playback speed)
+
+You can also send multiple parameters in the same packet.
+
+Source code of this app is written in C# and is free to use. RemoteControlClient. cs could be used for comunication in separate program. It implements Connect, Disconnect and Send methods and OnConnected, OnDisconnected and OnDataReceived events. OnDataReceived would be executed each 1 second, when you are in the video player. OnDataReceived and Send works with RemoteApiData class which could be filled and sent or received back from DeoVR. You can check button handlers in TestForm. cs to see how to fills RemoteApiData.
+
+Raw DeoVR remote control protocol description
+Remote control client should connect to the device with running DeoVR on TCP port 23554.After the connection has been established, DeoVR will start sending a packet each one second. Remote client also must send a packet (empty or with json) to DeoVR each one secondfor pinging purposes.
+
+Packet structure:
+
+- Each packet starts with 4-bytes integer value with length of json data represented in UTF8 format.
+
+- If length is zero, no video data is passed. Empty packets are used for ping purposes.
+
+- If DeoVR won't receive any type of packet for more then 3 seconds it will close the connection.
+
+Here's a structure of encoded json:
+
+{
+"path":"D:/test.mp3",
+"duration":123.45,
+"currentTime":10.5,
+"playbackSpeed":1.0,
+"playerState":0
+}
+PlayerState is enumerator: Play = 0, Pause = 1. You can send packet with path, currentTime and playbackSpeed fields. DeoVR will automatically open new file/path, seek to special time or change playback speed. The only one condition, that you have to be inside video player in DeoVR.
+
+9. Spatial Audio
+
+DeoVR adds support for a spatial audio. Final VR video should be provided in .mkv container, with audio encoded in Opus codec. Only tbe8_2 format is supported at the moment. To learn more about creating spatial audio proceed to Spatial Workstation website. Select FB360 Matroshka (experimental) when exporting from Spatial Workstation.
+
+- Deo_spatial_test_1_FB360_SBS_180.mkv
+
+- Deo_spatial_test_2_FB360_SBS_180.mkv
+
+To enable support of spatial audio on your website via DeoVR deeplink scheme add a separate “encodings_spatial” field in your JSON with encodings. Similar to “encodings” specify all other information but instead point to your .mkv files only with the spatial track.
+Important: regular stereo track should be excluded from the file.
+
+If you are playing a file with Path and not Encodings, the file should have the flag “-FB360” or “_FB360”. 
+As of April 2021 switching between audio track manually is not yet supported.
+
+Important when uploading video files with Spatial Audio.
+The master file must be provided in the format: MP4 or MKV and contain a stereo track with two channels.
+If you need to support Spatial Audio, the master file must be in MKV format and contain two tracks.
+Track 1 should contain a track with Spatial Audio in Facebook 360 TBE 8.2 format.
+Track 2 must be present and in 2-channel stereo format.
+
+Example:
+
+{
+"scenes":[
+{
+"name":"Library",
+"list":[
+{
+"encodings":[
+{
+"name":"h264",
+"videoSources":[
+{
+"resolution":1080,
+"url":"https://yoursite.com/ExampleVideo_1080p.mp4"
+},
+{
+"resolution":1440,
+"url":"https://yoursite.com/ExampleVideo_1440p.mp4"
+}
+]
+}
+"encodings_spatial":[
+{
+"name":"h264",
+"videoSources":[
+{
+"resolution":1080,
+"url":"https://yoursite.com/SpatialExampleVideo_1080p.mkv"
+},
+{
+"resolution":1440,
+"url":"https://yoursite.com/SpatialExampleVideo_1440p.mkv"
+}
+]
+}
+],
+"title":"ExampleVideo1_Spatial",
+"screenType":"sphere",
+"stereoMode":"tb",
+"skipIntro":0,
+"videoThumbnail":"https://yoursite.com/ExampleVideo1_SeekLookUp.mp4",
+"videoPreview":"https://yoursite.com/ExampleVideo1_Preview.mp4",
+"thumbnailUrl":"https://yoursite.com/ExampleVideo1_image.jpg",
+"timeStamps":[
+{
+"ts":15,
+"name":"Wall"
+}
+],
+"is3d":true,
+"videoLength":60,
+"id":123
+}
+],
+"authorized":"0"
+}
+
+10. Naming convention for supported meshes
+
+DeoVR supports the following projection styles (meshes): 
+
+- Flat 2D plane
+
+- Equirectangular:
+
+- 180° FOV
+
+- 360° FOV
+
+- Fisheye projection:
+
+- 180° FOV
+
+- 190° FOV
+
+- 200° FOV with MKX lens correction
+
+- 220° FOV with VRCA lens correction 
+
+Note: Proper video orientation is crucial for an immersive VR experience:
+
+- Post-production: Set orientation during the post-production editing process. This ensures the intended perspective is preserved.
+
+- In-App adjustments: While major orientation settings should be finalized during editing, minor tweaks can be made within the DeoVR app. If necessary, you can adjust the yaw by ±180 degrees to correct the camera's direction. However, relying on in-app adjustments is not recommended for significant changes, as it may not reflect the creator's original intent.
+
+Eye location:
+
+- Side-by-Side
+
+- Top-Bottom
+
+To play local files in the correct mode or add the appropriate flag from the following list to the file name:
+
+For Stereo mode (equirectangular):
+
+- _180
+
+- _360
+
+- _fisheye
+
+- _fisheye190 \\Canon VR lens
+
+- _mkx200
+
+- _vrca220
+
+To switch Screen Type:
+
+- "LR" or "3DH" or "SBS"
+
+- "TB" or "3DV" or "OverUnder"
+
+For example:
+
+Title_SBS_180.mp4 sets Side by Side & 180°
+My_video_SBS_mkx200.mp4 sets Side by Side & 200°
+Title_FB360_SBS_180.mkv sets Side by Side & 180 & Spatial sound
+
+11. HLS, RTMP, RTSP
+
+We have two guides to live streaming on the DeoVR blog. Please check these first: 
+
+- How to live stream VR video using OBS
+
+- Live streaming VR video at DeoVR using HLS
+
+Please keep checking back. We will update our documentation with more information and guides too. 
+
+Other live streaming process: 
+
+You can stream from the Zcam K2 Pro camera to Quest headsets with the help of Raspberry Pi. This brings the director's monitor view right into VR and you can adjust the scene before you press the record button. You might try recording and streaming at the same time.
+
+Make sure to mount the Raspberry Pi SD image from the description to this video before you start. Use the original charger or appropriate power bank for the Raspberry Pi. Make sure to keep your Raspberry Pi away from routers or other WiFi devices.
+
+Streaming works from a master camera, which shows footage in mono at 5Mbps with approximately 10 seconds latency. The master camera or camera A is the one with a screen and the record button.
+
+Make sure you have DeoVR installed on your Quest headset. 
+
+- Turn the camera on.
+
+- In the camera menu go to Connect>Network>ETH. Set “Direct”
+
+- Turn on your Raspberry Pi. Connect the Raspberry Pi to the K2 Pro camera using the ethernet cable. 
+
+- The streaming will start automatically.
+
+- Connect your headset to the “RPI4_Camera_GW” WiFi network
+
+- In the DeoVR player app go to the browser and switch to http:// (click on https:// to switch it to http://). 
+
+- Type 10.0.0.1 (http://10.0.0.1) in the browser, click enter, then click on “Start Stream”.  You will experience a 10 sec delay.
+
+- If the camera is upside down, use the player settings to revert it. Go to Settings > Image tab and drag the “Rotation” slider to +/- 180 degrees.
+
+- Look at the image in VR and make any final adjustments to the scene.
+
+This is RTSP streaming, the only option for the K2 camera.
+
+RTSP support is only available on the Windows platform.
+RTMP is not supported.
+HLS supported.
+
+If you want to open you own HLS stream in DeoVR, simply enter HLS stream url into DeoVR.
+Or you can make json file named "deovr" with an entry to HLS stream. You can use this file to provide easy access to multiple HLS streams from DeoVR dashboard.
+You can get more information about deovr json file in the article 5.
+
+{
+"scenes": [
+{
+"name": "VR180 Samples",
+"list": [
+{
+"path": "https://yoursite.com/Example.m3u8",
+"title": " ExampleStream",
+"screenType": " sphere",
+"stereoMode": "sbs",
+"thumbnailUrl": "https://yoursite.com/ExampleTumb.jpg",
+"is3d": true,
+"id": "01"
+}
+]
+}
+],
+"authorized": "0"
+}
+
+12. Anaglyph mode
+
+Anaglyph mode is no longer supported on DeoVR. 
+
+13. Passthrough mode
+
+Supported headsets:
+
+- Quest 3 & 3S (color stereo)
+
+- Apple Vision Pro (coming soon)
+
+- Quest Pro (color stereo)
+
+- Pico 4 (color mono)
+
+- Quest 2 (monochromatic)
+
+- Pico Neo 3 Pro (monochromatic)
+
+- Valve Index (monochromatic)
+
+Passthrough is a way to blend the real and virtual worlds using DeoVR. It can also be described as mixed reality or Augmented Reality (AR). It uses the passthrough/AR function on virtual reality headsets to bring VR content into the user’s real-world surroundings. A VR headset with a front-facing camera is required, such as the Quest 3 or Valve Index.
+
+Viewing Passthrough content with DeoVR: 
+
+- Update to the latest version of the DeoVR app.
+
+- If using the Valve Index headset, make sure to enable Room View in SteamVR.
+
+- Find a suitable VR video on DeoVR with a black or plain background, or with the passthrough tag.
+
+- Open the video and enter the Player Settings (right-hand side panel). Go to the ‘Passthrough’ section at the bottom. Toggle ‘Enable passthrough’ on.
+
+- Now adjust the settings to make the background fade to reveal the real-world surroundings while the main action is still visible. Use Hue, Saturation and Brightness sliders to match the color you want to have transparent, after, increase the color range to start removing the color and colors similar to it. Use Falloff to soften the transition from visible to transparent pixels.
+
+Uploading Passthrough content to DeoVR: 
+
+Early passthrough only allowed cutting one color, such as black, green, or white. Black colour was set by default, and if the user wanted to change the colour, they would use settings such as hue, saturation, brightness, colour range and falloff (feather).
+
+Creators can add specific passthrough parameters to their videos when uploading content (or at a later date). This can be added via the DeoVR Creator's panel. 
+
+Add the accurate values for each setting: Hue, Saturation, Brightness, Color Range, Falloff, or leave at the default settings for green screen. (If you're using Alpha Channel passthrough you can also select that on this page.) 
+
+Legacy: 
+
+Previously, if the user wants to upload Passthrough content using a specific color background, they could submit those settings in the description of the video, and then the DeoVR moderators would use those settings as the default for that video: 
+
+#passthrough settings#
+Hue 30
+Saturation 100
+Brightness 100
+Color Range 360
+Falloff 1000
+
+Or, more simply: 
+
+#passthrough settings#
+30
+100
+100
+360
+1000
+
+To discover the correct settings, the creator will first need to identify them offline (by uploading video to his headset and testing locally using the DeoVR app). 
+
+Step-by-step tutorial: 
+
+In this example, we will use a video with a black background.
+
+- Click the trigger button to open the main player menu
+
+- On the right, you will see the settings window
+
+- Find the passthrough settings tab (eye icon)
+
+- On the top of the window, click on the toggle next to “Passthrough” to activate it
+
+- As this automatically selects black as the passthrough color, the video background will become transparent
+
+- You can adjust settings such as range and falloff to get better results
+
+To create a video with a black background, you can use a completely black color (see below), which is set as the default for black background passthrough settings:
+
+If you work in Adobe After Effects, or any other software that supports color hex/color picker, use these numbers in the color picker : #000000
+
+This method may cause artifacts on the edges of an object, depending on the video quality and lighting conditions.
+
+In this example, you can see that the shoes are affected and partly transparent because the shoes are black:
+
+This is why green or blue colors are recommended for passthrough videos.
+
+Green background
+
+If your video features a green background, these are the settings you can use to make it transparent: 
+
+DeoVR uses the default green background color that most creators use for passthrough. Use this image below for color-picking the proper green background, or use the following hex code inside of the color picker #2BE640
+
+You will see this method is much cleaner and creates fewer artifacts. However, it is not perfect. To discover the best values, use the same logic as described above with the black background, and include them in the description section when uploading to DeoVR. 
+
+14. Alpha channel passthrough for Fisheye videos (13.9+)
+
+The most recent and advanced version of passthrough is called alpha passthrough and requires creating an embedded alpha channel inside of the video.
+
+It's a more complex method but allows better control of the quality and doesn't require any settings for preview. Simply click a button to switch between passthrough and non-passthrough. Currently, it only works only with fisheye projection VR video as it packs the alpha channel next to fisheye circles.
+
+Benefits:
+
+- It offloads the greenscreen/background removal into post-production, meaning the headset results look much better. For example, no more losing fine details like hair. Creators are now free to color correct the footage without worrying if it will affect the chroma key operation in the app.
+
+- Add an alpha channel to any video, converting it into an optional passthrough version. With the advent of AI background removal tools, it is only a matter of time before you are able to get high-quality mattes of anything you choose.
+
+Guide to creating the correct layout:
+
+In your compositing software, export a normal video where you suppress the green color, and another version with just alpha as black and white (later, we will use only the red channel) at the same size and length as the normal video.
+
+ 
+
+ 
+
+ 
+
+Use our tool to pack the alpha channel into your fisheye VR video: 
+
+ 
+
+Download: Deo-Alpha-Packer.zip
+
+- Upack the zip and run the Deo-Alpha-Packer.exe
+
+- Under the settings menu, make sure to link/install FFMPEG
+
+- Load the Color and Alpha videos into their respective fields and run "Export"
+
+Alternatively, pack it yourself in a compositing software following this diagram:
+
+The final step is to add _ALPHA into the file name before uploading, or tell the uploader to switch the "Has Alpha" option ON.
+
+Done! Now, the DeoVR player will show the video with perfect passthrough.
+
+Adobe Premiere Alpha Channel Presets:
+
+If you're using Adobe Premiere to edit together your VR content, use these project preset files to create alpha channel content for passthrough. This .rar file contains two masks, a sample video and a tutorial. 
+
+Adobe After Effects Alpha Channel Presets:
+
+Similarly, if you're using Adobe After Effects to create VR content, use these project preset files to create alpha channel content for passthrough. This .rar file contains the project file, a sample video and a tutorial. 
+
+15. Subtitles
+
+DeoVR offers state-of-the-art subtitles support, with the ability to position, scale, set BG opacity and place them at any depth. 
+
+Support:
+
+- .srt format
+
+- Alphabets: All European, all Cyrillic, Japanese, Chinese, Korean, Armenian, Georgian, Thai and Malayalam
+
+How to set up:
+
+- DeoVR.com streaming
+
+- enable Subtitles on the Main player panel
+
+- to change the language, go to Player Settings / Subtitles tab, there use the subtitle dropdown to select others
+
+- you can also use load your own subtitles by using the "Open" button (folder icon), then select the subtitle in the file manager
+
+- Local storage playback:
+
+- copy subtitles in same folder as the video
+
+- rename them to match the video filename
+
+16. Supported local file formats and codecs
+
+The DeoVR player supports most common video and audio file formats and codecs available today when playing local files, with small differences between the Windows and Android/standalone headset (Quest/Pico) apps.
+
+Supported files: 
+
+DeoVR Windows app: AVI, MPEG, MP4, MOV, MPG, M4V, JPG, PNG, M3U8
+
+Quest/Pico app: MPEG, MP4, MKV, WebM, MPG, M4V, JPG, PNG, M3U8
+
+Video Codec: 
+
+DeoVR Windows app: HEVC/H.265, H.264, H.263 (DivX/XVid), MJPEG, WMV, V8, V9, Hap, NotchLC, DV
+
+Quest/Pico app: AV1 (Quest 3/3S), HEVC/H.265, H.264, H.263 (DivX/XVid), VP8, VP9, DV, Uncompressed R10K, Uncompressed V210, Uncompressed 2VUY
+
+Audio Codecs: 
+
+DeoVR Windows app: MP3, AAC, WAV, FLAC, OPUS, µLAW, ADPCM, Linear PCM
+
+Quest/Pico app: MP3, AAC, WAV, FLAC, OPUS, Linear PCM
+
+17. Get the DeoVR App
+
+Go here to download the DeoVR app for various headsets: DeoVR App download
+
+- Meta Store: Quest 3S / 3 / Pro / 2
+
+- SteamVR (PCVR): HTC Vive Pro/Cosmos, Windows Mixed Reality
+
+- PICO: Neo 3/3 Pro/4
+
+- Sidequest: Quest 3S / 3 / Pro / 2, Pico Neo3/3 Pro/4
+
+- Apple Vision Pro: App coming soon, Watch in Safari Guide
+
+Note: Our goal is to provide the perfect experience via the latest version of the DeoVR app. We recommend one of the most popular Meta headsets (ideally the Quest 3S or 3, but Pro and Quest 2 headsets are supported) with up-to-date firmware. Support will end for older versions of the DeoVR app after a certain amount of time - we recommend using the latest version and updating straight away.
+

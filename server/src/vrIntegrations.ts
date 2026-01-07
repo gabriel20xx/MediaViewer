@@ -48,15 +48,16 @@ function inferStereo(filename: string): 'sbs' | 'tb' | 'mono' {
   return 'mono';
 }
 
-function svgThumb(title: string) {
+function svgThumb(title: string, footer: string) {
   const safe = title.replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+  const safeFooter = footer.replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
   <rect x="0" y="0" width="640" height="360" fill="#111827"/>
   <rect x="24" y="24" width="592" height="312" rx="16" fill="#0b1220" stroke="#1f2937"/>
   <text x="48" y="96" fill="#e5e7eb" font-size="22" font-family="system-ui,Segoe UI,Roboto,Helvetica,Arial">MediaViewer</text>
   <text x="48" y="136" fill="#9ca3af" font-size="16" font-family="system-ui,Segoe UI,Roboto,Helvetica,Arial">${safe}</text>
-  <text x="48" y="312" fill="#6b7280" font-size="14" font-family="system-ui,Segoe UI,Roboto,Helvetica,Arial">No thumbnail</text>
+  <text x="48" y="312" fill="#6b7280" font-size="14" font-family="system-ui,Segoe UI,Roboto,Helvetica,Arial">${safeFooter}</text>
 </svg>`;
 }
 
@@ -129,9 +130,11 @@ export function registerVrIntegrations(
     const id = String(req.params.id ?? '').trim();
     const item = await getVideoById(db, id);
     const title = item?.filename || id;
+    const err = String((req.query as any)?.err ?? '').trim();
+    const footer = err ? 'Not able to load preview' : 'No thumbnail';
     res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
     res.setHeader('Cache-Control', 'public, max-age=3600');
-    res.send(svgThumb(title));
+    res.send(svgThumb(title, footer));
   });
 
   // --- DeoVR integration ---

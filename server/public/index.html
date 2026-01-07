@@ -331,6 +331,9 @@
           ? `<span class="tag tag--good">funscript</span>`
           : `<span class="tag tag--bad">no funscript</span>`;
         const tagT = `<span class="tag">${item.mediaType}</span>`;
+        const tagVr = item.isVr
+          ? `<span class="tag">vr</span>`
+          : '';
 
         const durationTag = item.mediaType === 'video'
           ? `<span class="tag mvLen" data-id="${item.id}">${formatDuration(getDurationSec(item.id) ?? NaN)}</span>`
@@ -353,7 +356,7 @@
             </div>
             <div class="meta">
               <div class="name">${escapeHtml(item.filename)}</div>
-              <div class="tags">${tagT}${tagF}${durationTag}</div>
+              <div class="tags">${tagT}${tagVr}${tagF}${durationTag}</div>
             </div>
           </div>
         `;

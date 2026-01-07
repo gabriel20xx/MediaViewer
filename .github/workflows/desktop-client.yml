@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
@@ -24,25 +24,20 @@ jobs:
 
       - name: Install
         working-directory: client-desktop
+        shell: bash
         run: |
-          if (Test-Path package-lock.json) { npm ci } else { npm install }
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
 
       - name: Build
         working-directory: client-desktop
         run: npm run build
-
-      - name: Package (Windows EXE)
-        working-directory: client-desktop
-        run: npm run package:win
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: desktop-client-dist
           path: client-desktop/dist/
-
-      - name: Upload EXE artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-client-exe
-          path: client-desktop/release/**/*.exe
