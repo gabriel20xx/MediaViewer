@@ -15,18 +15,23 @@ const driver = new SerialTCodeDriver();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function createWindow() {
+  const preloadPath = path.join(__dirname, 'preload.js');
+  console.log('[Main] Creating window with preload:', preloadPath);
+  
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: 1600,
+    height: 1000,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
     },
   });
 
   const file = path.join(__dirname, 'renderer.html');
+  console.log('[Main] Loading renderer:', file);
   await mainWindow.loadFile(file);
+  console.log('[Main] Window loaded successfully');
 }
 
 ipcMain.handle('serial:listPorts', async () => {

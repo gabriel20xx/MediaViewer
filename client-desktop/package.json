@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "npm run build && electron dist/main.js",
-    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs && node scripts/fix-preload.mjs",
     "start": "electron dist/main.js",
     "package:win": "npm run build && electron-builder --win portable"
   },

@@ -11,7 +11,7 @@
       header { padding: 12px 16px; border-bottom: 1px solid #222; display: flex; gap: 12px; align-items: center; justify-content: space-between; }
       header h1 { font-size: 14px; margin: 0; }
       .wrap { display: grid; grid-template-columns: 380px 380px 1fr; height: calc(100vh - 50px); }
-      .left { border-right: 1px solid #222; padding: 12px; overflow: auto; display: grid; gap: 12px; }
+      .left { border-right: 1px solid #222; padding: 12px; overflow-y: auto; display: grid; gap: 12px; grid-template-rows: auto auto auto 1fr; align-content: start; }
       .middle { border-right: 1px solid #222; padding: 12px; overflow: auto; display: grid; gap: 12px; }
       .right { padding: 12px; overflow: auto; display: grid; gap: 10px; }
       .row { display: flex; gap: 8px; align-items: center; }
@@ -26,8 +26,11 @@
       input[type="range"] { width: 100%; max-width: 100%; padding: 0; border: 0; background: transparent; }
       .small { font-size: 12px; opacity: 0.85; }
       .pill { display: inline-block; padding: 2px 8px; border: 1px solid #2a2f3a; border-radius: 999px; font-size: 11px; margin-left: 6px; }
+      .pill.connected { background: #10b981; color: #fff; border-color: #059669; }
+      .pill.disconnected { background: #ef4444; color: #fff; border-color: #dc2626; }
       .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
       .card { border: 1px solid #222; border-radius: 12px; padding: 12px; background: #0f1117; }
+      .card.console-card { display: flex; flex-direction: column; min-height: 150px; overflow: hidden; }
       .card h2 { margin: 0 0 10px 0; font-size: 12px; font-weight: 600; opacity: 0.9; }
       .kpi { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
       .kpi .pill { margin-left: 0; }
@@ -35,6 +38,7 @@
       .meter { position: relative; height: 14px; border-radius: 999px; background: #1a1c24; border: 1px solid #2a2f3a; overflow: hidden; }
       .meter-fill { position: absolute; inset: 0; background: linear-gradient(90deg, #5b8cff, #2cd3a7); transform-origin: left center; transform: scaleX(0); transition: transform 0.12s ease-out; }
       .meter-label { font-size: 11px; opacity: 0.8; margin-top: 4px; text-align: right; }
+      .console-view { border: 1px solid #222; border-radius: 8px; padding: 8px; background: #000; overflow-y: auto; font-family: monospace; font-size: 11px; flex: 1; min-height: 100px; }
     </style>
   </head>
   <body>
@@ -76,6 +80,12 @@
               <button id="connect">Connect</button>
               <button id="disconnect">Disconnect</button>
             </div>
+            <div class="row">
+              <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                <input type="checkbox" id="autoConnectSerial" />
+                <span class="small">Auto-connect on startup</span>
+              </label>
+            </div>
           </div>
         </div>
 
@@ -92,8 +102,37 @@
               </select>
               <input id="axisCustom" value="L0" style="max-width: 120px; display:none;" />
               <button id="toggleDrive" style="max-width: 140px;">Drive: OFF</button>
+              <button id="btnSettings" style="max-width: 140px;">⚙️ Settings</button>
             </div>
             <div class="small">Sends TCode lines based on the funscript actions while playing.</div>
+            
+            <div style="border-top: 1px solid #222; padding-top: 8px; margin-top: 4px;">
+              <div class="row">
+                <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                  <input type="checkbox" id="autoHomeEnabled" />
+                  <span class="small">Auto-home on pause/stop</span>
+                </label>
+              </div>
+              <div id="autoHomeSettings" style="display: none; margin-top: 8px;">
+                <div class="small" style="margin-bottom: 4px;">Home position (%):</div>
+                <input type="number" id="autoHomePosition" min="0" max="100" step="1" value="0" style="margin-bottom: 8px;" />
+                <div class="small" style="margin-bottom: 4px;">Delay (seconds):</div>
+                <input type="number" id="autoHomeDelay" min="0" max="60" step="0.5" value="2" style="margin-bottom: 8px;" />
+                <div class="small" style="margin-bottom: 4px;">Transition time (ms):</div>
+                <input type="number" id="autoHomeTransition" min="100" max="10000" step="100" value="2000" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card console-card">
+          <h2>Console Log</h2>
+          <div id="consoleView" class="console-view">
+            <div style="margin-bottom: 6px; display: flex; justify-content: space-between;">
+              <span style="opacity: 0.7;">Debug Output</span>
+              <button id="btnClearConsole" style="padding: 2px 8px; font-size: 10px;">Clear</button>
+            </div>
+            <div id="consoleOutput"></div>
           </div>
         </div>
       </div>
@@ -150,16 +189,67 @@
         <div class="meter-label" id="funscriptLabel">Value: 0% (000)</div>
         <div class="small" id="noVideoHint" style="display:none;">No-video mode: using sync playback time only (no /stream requests).</div>
         <div class="small" id="playback"></div>
+      </div>
+    </div>
+
+    <div id="settingsModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.8); z-index:1000; overflow:auto;">
+      <div style="max-width:700px; margin:40px auto; background:#1e1e1e; border:1px solid #333; border-radius:8px; padding:30px;">
+        <h2 style="margin-top:0; color:#fff;">Script & Axis Settings</h2>
         
-        <div style="margin-top: 12px;">
-          <button id="btnConsole" style="width: 100%;">Show Console</button>
-        </div>
-        <div id="consoleView" style="display: none; margin-top: 8px; border: 1px solid #222; border-radius: 8px; padding: 8px; background: #000; max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 11px;">
-          <div style="margin-bottom: 6px; display: flex; justify-content: space-between;">
-            <span style="opacity: 0.7;">Console Log</span>
-            <button id="btnClearConsole" style="padding: 2px 8px; font-size: 10px;">Clear</button>
+        <div style="margin-bottom:30px;">
+          <h3 style="color:#fff;">Script Transformations</h3>
+          <div style="margin-bottom:15px;">
+            <label style="display:flex; align-items:center; color:#fff; cursor:pointer;">
+              <input type="checkbox" id="invertScriptCheck" style="margin-right:10px;">
+              <span>Invert Script Positions (0↔100)</span>
+            </label>
           </div>
-          <div id="consoleOutput"></div>
+          <div style="margin-bottom:15px;">
+            <label style="display:block; color:#fff; margin-bottom:5px;">Script Delay (ms)</label>
+            <input type="number" id="scriptDelayInput" step="10" style="width:150px; padding:5px;">
+            <span style="color:#888; font-size:0.9em; margin-left:10px;">Negative = earlier, Positive = later</span>
+          </div>
+        </div>
+
+        <div style="margin-bottom:30px;">
+          <h3 style="color:#fff;">Axis Position Limits</h3>
+          
+          <div style="margin-bottom:20px;">
+            <label style="display:block; color:#fff; margin-bottom:5px;">L0 (Stroke) - Min: <span id="L0MinLabel">0</span>% | Max: <span id="L0MaxLabel">100</span>%</label>
+            <div style="display:flex; gap:15px; align-items:center;">
+              <input type="range" id="L0MinSlider" min="0" max="100" value="0" style="flex:1;">
+              <input type="range" id="L0MaxSlider" min="0" max="100" value="100" style="flex:1;">
+            </div>
+          </div>
+
+          <div style="margin-bottom:20px;">
+            <label style="display:block; color:#fff; margin-bottom:5px;">L1 (Twist) - Min: <span id="L1MinLabel">0</span>% | Max: <span id="L1MaxLabel">100</span>%</label>
+            <div style="display:flex; gap:15px; align-items:center;">
+              <input type="range" id="L1MinSlider" min="0" max="100" value="0" style="flex:1;">
+              <input type="range" id="L1MaxSlider" min="0" max="100" value="100" style="flex:1;">
+            </div>
+          </div>
+
+          <div style="margin-bottom:20px;">
+            <label style="display:block; color:#fff; margin-bottom:5px;">L2 (Roll) - Min: <span id="L2MinLabel">0</span>% | Max: <span id="L2MaxLabel">100</span>%</label>
+            <div style="display:flex; gap:15px; align-items:center;">
+              <input type="range" id="L2MinSlider" min="0" max="100" value="0" style="flex:1;">
+              <input type="range" id="L2MaxSlider" min="0" max="100" value="100" style="flex:1;">
+            </div>
+          </div>
+
+          <div style="margin-bottom:20px;">
+            <label style="display:block; color:#fff; margin-bottom:5px;">L3 (Pitch) - Min: <span id="L3MinLabel">0</span>% | Max: <span id="L3MaxLabel">100</span>%</label>
+            <div style="display:flex; gap:15px; align-items:center;">
+              <input type="range" id="L3MinSlider" min="0" max="100" value="0" style="flex:1;">
+              <input type="range" id="L3MaxSlider" min="0" max="100" value="100" style="flex:1;">
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex; gap:10px; justify-content:flex-end;">
+          <button id="btnResetSettings" style="padding:8px 16px;">Reset to Defaults</button>
+          <button id="btnCloseSettings" style="padding:8px 16px; background:#007acc; color:#fff; border:none; border-radius:4px;">Close</button>
         </div>
       </div>
     </div>
@@ -179,6 +269,22 @@
         lastFunscriptValue: 0,
         drive: false,
         axis: 'L0',
+        autoHomeEnabled: false,
+        autoHomePosition: 0,
+        autoHomeDelay: 2,
+        autoHomeTransition: 2000,
+        autoHomeTimer: null,
+        invertScript: false,
+        scriptDelay: 0,
+        autoConnectSerial: false,
+        lastSerialPort: '',
+        lastSerialBaud: 115200,
+        axisLimits: {
+          L0: { min: 0, max: 100 },
+          L1: { min: 0, max: 100 },
+          L2: { min: 0, max: 100 },
+          L3: { min: 0, max: 100 },
+        },
         clientId: 'desktop-' + Math.random().toString(16).slice(2),
         sessionId: 'default',
         ws: null,
@@ -194,6 +300,7 @@
         remoteLastUpdateAt: 0,
         lastAppliedRemotePaused: null,
         serialConnected: false,
+        isApplyingRemoteState: false,
 
         durationMs: null,
         durationCache: new Map(),
@@ -201,6 +308,7 @@
 
         followSource: 'any',
         seenSources: new Map(),
+        clientsMetadata: new Map(),
 
         consoleLogs: [],
         consoleVisible: false,
@@ -271,10 +379,12 @@
 
       function setWsPill(connected) {
         wsPill.textContent = connected ? 'WS: connected' : 'WS: disconnected';
+        wsPill.className = connected ? 'pill connected' : 'pill disconnected';
       }
 
       function setSerialPill(connected) {
         serialPill.textContent = connected ? 'Serial: connected' : 'Serial: disconnected';
+        serialPill.className = connected ? 'pill connected' : 'pill disconnected';
       }
 
       function setDrivePill() {
@@ -297,6 +407,23 @@
             if (typeof p.followRemote === 'boolean') state.followRemote = p.followRemote;
             if (typeof p.noVideo === 'boolean') state.noVideo = p.noVideo;
             if (typeof p.followSource === 'string') state.followSource = p.followSource;
+            if (typeof p.autoHomeEnabled === 'boolean') state.autoHomeEnabled = p.autoHomeEnabled;
+            if (typeof p.autoHomePosition === 'number') state.autoHomePosition = p.autoHomePosition;
+            if (typeof p.autoHomeDelay === 'number') state.autoHomeDelay = p.autoHomeDelay;
+            if (typeof p.autoHomeTransition === 'number') state.autoHomeTransition = p.autoHomeTransition;
+            if (typeof p.invertScript === 'boolean') state.invertScript = p.invertScript;
+            if (typeof p.scriptDelay === 'number') state.scriptDelay = p.scriptDelay;
+            if (typeof p.autoConnectSerial === 'boolean') state.autoConnectSerial = p.autoConnectSerial;
+            if (typeof p.lastSerialPort === 'string') state.lastSerialPort = p.lastSerialPort;
+            if (typeof p.lastSerialBaud === 'number') state.lastSerialBaud = p.lastSerialBaud;
+            if (p.axisLimits && typeof p.axisLimits === 'object') {
+              ['L0', 'L1', 'L2', 'L3'].forEach(axis => {
+                if (p.axisLimits[axis]) {
+                  if (typeof p.axisLimits[axis].min === 'number') state.axisLimits[axis].min = p.axisLimits[axis].min;
+                  if (typeof p.axisLimits[axis].max === 'number') state.axisLimits[axis].max = p.axisLimits[axis].max;
+                }
+              });
+            }
           }
         } catch {}
       }
@@ -309,13 +436,104 @@
           followRemote: state.followRemote,
           noVideo: state.noVideo,
           followSource: state.followSource,
+          autoHomeEnabled: state.autoHomeEnabled,
+          autoHomePosition: state.autoHomePosition,
+          autoHomeDelay: state.autoHomeDelay,
+          autoHomeTransition: state.autoHomeTransition,
+          invertScript: state.invertScript,
+          scriptDelay: state.scriptDelay,
+          axisLimits: state.axisLimits,
+          autoConnectSerial: state.autoConnectSerial,
+          lastSerialPort: state.lastSerialPort,
+          lastSerialBaud: state.lastSerialBaud,
         }));
+      }
+
+      function cancelAutoHome() {
+        if (state.autoHomeTimer) {
+          clearTimeout(state.autoHomeTimer);
+          state.autoHomeTimer = null;
+        }
+      }
+
+      async function triggerAutoHome() {
+        cancelAutoHome();
+        
+        // Check requirements
+        if (!state.autoHomeEnabled) {
+          logToConsole('log', 'Auto-home skipped: not enabled');
+          return;
+        }
+        if (!state.drive) {
+          logToConsole('log', 'Auto-home skipped: drive is off');
+          return;
+        }
+        if (!state.serialConnected) {
+          logToConsole('log', 'Auto-home skipped: serial not connected');
+          return;
+        }
+        
+        logToConsole('log', `Auto-home scheduled: ${state.autoHomeDelay}s delay to position ${state.autoHomePosition}%`);
+        
+        state.autoHomeTimer = setTimeout(async () => {
+          try {
+            const axis = String(state.axis || 'L0').toUpperCase();
+            const pos = Math.max(0, Math.min(100, Math.round(state.autoHomePosition)));
+            const scaled = Math.round((pos / 100) * 999);
+            const vvv = String(scaled).padStart(3, '0');
+            const interval = Math.max(100, Math.min(10000, Math.round(state.autoHomeTransition)));
+            const iii = String(interval).padStart(5, '0');
+            const line = `${axis}${vvv}I${iii}`;
+            logToConsole('log', `Auto-home executing: ${line}`);
+            if (window.mv) await window.mv.tcodeSend(line);
+          } catch (err) {
+            logToConsole('error', 'Auto-home failed:', err);
+          }
+        }, state.autoHomeDelay * 1000);
       }
 
       function labelForSource(id) {
         if (!id) return 'Any';
         if (id === 'any') return 'Any';
+        
+        // Fallback labels for known patterns (check these first before metadata)
+        if (id.startsWith('vr:deovr')) return 'VR (DeoVR)';
+        if (id.startsWith('vr:heresphere')) return 'VR (HereSphere)';
+        
+        // Check if we have metadata for this client
+        const meta = state.clientsMetadata.get(id);
+        if (meta) {
+          const browser = parseBrowserFromUserAgent(meta.userAgent);
+          return `${browser} (${meta.ipAddress})`;
+        }
+        
+        // More fallback labels
+        if (id.startsWith('desktop-')) return 'Desktop Client';
+        if (id.startsWith('web-')) return 'Web Browser';
+        
+        // For any other format, show a shortened version
+        if (id.length > 20) return id.slice(0, 17) + '...';
         return id;
+      }
+      
+      function parseBrowserFromUserAgent(ua) {
+        if (!ua || ua === 'Unknown') return 'Unknown Browser';
+        
+        // Check for common browsers
+        if (ua.includes('Edg/')) return 'Edge';
+        if (ua.includes('Chrome/')) return 'Chrome';
+        if (ua.includes('Firefox/')) return 'Firefox';
+        if (ua.includes('Safari/') && !ua.includes('Chrome')) return 'Safari';
+        if (ua.includes('OPR/') || ua.includes('Opera/')) return 'Opera';
+        
+        // Mobile browsers
+        if (ua.includes('Mobile')) {
+          if (ua.includes('Chrome')) return 'Chrome Mobile';
+          if (ua.includes('Safari')) return 'Safari Mobile';
+          return 'Mobile Browser';
+        }
+        
+        return 'Browser';
       }
 
       function updateFollowSourceOptions() {
@@ -393,10 +611,27 @@
           try { msg = JSON.parse(String(evt.data)); } catch { return; }
           if (!msg || msg.type !== 'sync:state' || !msg.state) return;
 
+          // Update clients metadata if provided
+          if (msg.clients && Array.isArray(msg.clients)) {
+            for (const client of msg.clients) {
+              if (client.clientId) {
+                state.clientsMetadata.set(client.clientId, {
+                  userAgent: client.userAgent || 'Unknown',
+                  ipAddress: client.ipAddress || 'Unknown',
+                });
+              }
+            }
+          }
+
           const src = String(msg.state.fromClientId || '');
           if (src && src !== state.clientId) {
             state.seenSources.set(src, Date.now());
             updateFollowSourceOptions();
+            
+            // Log VR sync events for debugging
+            if (src.startsWith('vr:')) {
+              logToConsole('log', `VR sync received: ${src} → media ${msg.state.mediaId}`);
+            }
           }
 
           applyRemoteSyncState(msg.state);
@@ -423,7 +658,13 @@
         if (remote.fromClientId && remote.fromClientId === state.clientId) return;
 
         if (state.followSource && state.followSource !== 'any') {
-          if (String(remote.fromClientId || '') !== state.followSource) return;
+          if (String(remote.fromClientId || '') !== state.followSource) {
+            // Log when filtering out a source
+            if (String(remote.fromClientId || '').startsWith('vr:')) {
+              logToConsole('log', `VR sync filtered: followSource=${state.followSource}, got ${remote.fromClientId}`);
+            }
+            return;
+          }
         }
 
         const id = String(remote.mediaId);
@@ -435,14 +676,22 @@
           await openMedia(it.id, { suppressSync: true });
         }
 
-        state.applyingRemoteUntil = Date.now() + 800;
+        // Only throttle time updates, not pause state changes
+        const now = Date.now();
+        const isThrottled = now < state.applyingRemoteUntil;
+        
         state.remoteTimeMs = Math.max(0, Math.round(Number(remote.timeMs) || 0));
         // Be strict about paused parsing (handles booleans, 0/1, and 'true'/'false').
         const pausedRaw = remote.paused;
         const paused = pausedRaw === true || pausedRaw === 1 || pausedRaw === '1' || pausedRaw === 'true';
+        const pausedChanged = state.remotePaused !== paused;
         state.remotePaused = paused;
         state.remoteFps = Math.max(1, Math.round(Number(remote.fps) || 30));
         state.remoteLastUpdateAt = Date.now();
+
+        if (pausedChanged) {
+          logToConsole('log', `Remote pause state changed: ${paused ? 'PAUSED' : 'PLAYING'}`);
+        }
 
         // In no-video mode, do not load/control the stream.
         if (state.noVideo) return;
@@ -450,27 +699,33 @@
         const v = $('video');
         if (!(v instanceof HTMLVideoElement)) return;
 
-        const targetTime = Math.max(0, state.remoteTimeMs / 1000);
-        if (Number.isFinite(v.currentTime) && Math.abs(v.currentTime - targetTime) > 0.5) {
-          try { v.currentTime = targetTime; } catch {}
-        }
-
-        // Avoid rapid play/pause toggling: only apply when the desired paused state changes.
-        // Also ensure we sync if video element state doesn't match (e.g., after seeking).
-        const videoActuallyPaused = v.paused;
-        const needsUpdate = state.lastAppliedRemotePaused !== state.remotePaused || videoActuallyPaused !== state.remotePaused;
-        
-        if (needsUpdate) {
-          state.lastAppliedRemotePaused = state.remotePaused;
-          if (state.remotePaused) {
-            if (!videoActuallyPaused) {
-              try { v.pause(); } catch {}
+        state.isApplyingRemoteState = true;
+        try {
+          // Apply time seek only if not throttled
+          if (!isThrottled) {
+            const targetTime = Math.max(0, state.remoteTimeMs / 1000);
+            if (Number.isFinite(v.currentTime) && Math.abs(v.currentTime - targetTime) > 0.5) {
+              try { v.currentTime = targetTime; } catch {}
             }
-          } else {
-            if (videoActuallyPaused) {
+            state.applyingRemoteUntil = Date.now() + 1500;
+          }
+
+          // Always apply pause state changes immediately (not throttled)
+          if (state.lastAppliedRemotePaused !== state.remotePaused) {
+            state.lastAppliedRemotePaused = state.remotePaused;
+            state.applyingRemoteUntil = Date.now() + 1500; // Prevent immediate sync back
+            if (state.remotePaused) {
+              logToConsole('log', 'Pausing video (remote)');
+              try { v.pause(); } catch {}
+              triggerAutoHome(); // Trigger auto-home when remotely paused
+            } else {
+              logToConsole('log', 'Playing video (remote)');
               try { await v.play(); } catch {}
+              cancelAutoHome(); // Cancel auto-home when remotely unpaused
             }
           }
+        } finally {
+          state.isApplyingRemoteState = false;
         }
       }
 
@@ -706,21 +961,39 @@
           }
 
           // Publish sync state only when we're the "driver".
-          // If followRemote is ON, publishing our paused=true back would fight the web player.
+          // If followRemote is ON, we shouldn't send updates.
+          // Throttle automatic updates to prevent feedback loops.
           if (!state.followRemote && !state.noVideo) {
-            sendSyncUpdate({ mediaId: state.current.id, timeMs, paused, fps, frame });
+            // Don't send automatic updates if we're still applying remote state
+            if (Date.now() >= state.applyingRemoteUntil) {
+              sendSyncUpdate({ mediaId: state.current.id, timeMs, paused, fps, frame });
+            }
           }
 
           // Drive serial from funscript.
           if (state.drive && state.funscript?.actions?.length) {
             const actions = state.funscript.actions;
-            while (state.funIndex + 1 < actions.length && actions[state.funIndex + 1].at <= timeMs) {
+            // Apply script delay by adjusting the time we're looking up
+            const adjustedTimeMs = timeMs - state.scriptDelay;
+            while (state.funIndex + 1 < actions.length && actions[state.funIndex + 1].at <= adjustedTimeMs) {
               state.funIndex++;
               const act = actions[state.funIndex];
-              const tcode = window.mv ? null : null;
-              // send
               const axis = String(state.axis || 'L0').toUpperCase();
-              const pos = Math.max(0, Math.min(100, Math.round(act.pos)));
+              
+              // Get raw position from funscript
+              let pos = Math.max(0, Math.min(100, Math.round(act.pos)));
+              
+              // Apply inversion if enabled
+              if (state.invertScript) {
+                pos = 100 - pos;
+              }
+              
+              // Apply axis-specific min/max limits
+              const limits = state.axisLimits[axis] || { min: 0, max: 100 };
+              const range = limits.max - limits.min;
+              pos = limits.min + (pos / 100) * range;
+              pos = Math.max(0, Math.min(100, Math.round(pos)));
+              
               const scaled = Math.round((pos / 100) * 999);
               const vvv = String(scaled).padStart(3, '0');
               const line = `${axis}${vvv}`;
@@ -734,6 +1007,12 @@
 
       async function listPorts() {
         try {
+          if (!window.mv || typeof window.mv.listSerialPorts !== 'function') {
+            logToConsole('error', 'Serial API not available - preload script may not have loaded correctly');
+            const sel = $('port');
+            sel.innerHTML = '<option value="">Serial API not available</option>';
+            return;
+          }
           logToConsole('log', 'Listing serial ports...');
           const ports = await window.mv.listSerialPorts();
           logToConsole('log', `Found ${ports.length} serial port(s):`, ports.map(p => p.path).join(', ') || 'none');
@@ -777,16 +1056,26 @@
 
       $('ports').addEventListener('click', () => listPorts());
       $('connect').addEventListener('click', async () => {
-        await window.mv.serialConnect({ path: $('port').value, baudRate: Number($('baud').value || 115200) });
+        const portPath = $('port').value;
+        const baudRate = Number($('baud').value || 115200);
+        await window.mv.serialConnect({ path: portPath, baudRate });
         setStatus('Serial connected');
         state.serialConnected = true;
+        state.lastSerialPort = portPath;
+        state.lastSerialBaud = baudRate;
         setSerialPill(true);
+        savePrefs();
       });
       $('disconnect').addEventListener('click', async () => {
         await window.mv.serialDisconnect();
         setStatus('Serial disconnected');
         state.serialConnected = false;
         setSerialPill(false);
+      });
+
+      $('autoConnectSerial').addEventListener('change', () => {
+        state.autoConnectSerial = $('autoConnectSerial').checked;
+        savePrefs();
       });
 
       function setAxis(val) {
@@ -818,14 +1107,118 @@
         updateFunscriptUi(state.lastFunscriptValue);
       });
 
+      $('autoHomeEnabled').addEventListener('change', () => {
+        state.autoHomeEnabled = $('autoHomeEnabled').checked;
+        $('autoHomeSettings').style.display = state.autoHomeEnabled ? '' : 'none';
+        savePrefs();
+        if (!state.autoHomeEnabled) cancelAutoHome();
+      });
+
+      $('autoHomePosition').addEventListener('input', () => {
+        state.autoHomePosition = Number($('autoHomePosition').value) || 0;
+        savePrefs();
+      });
+
+      $('autoHomeDelay').addEventListener('input', () => {
+        state.autoHomeDelay = Number($('autoHomeDelay').value) || 0;
+        savePrefs();
+      });
+
+      $('autoHomeTransition').addEventListener('input', () => {
+        state.autoHomeTransition = Number($('autoHomeTransition').value) || 1000;
+        savePrefs();
+      });
+
+      // Settings modal
+      $('btnSettings').addEventListener('click', () => {
+        // Update UI from state
+        $('invertScriptCheck').checked = state.invertScript;
+        $('scriptDelayInput').value = state.scriptDelay;
+        
+        // Update axis sliders
+        ['L0', 'L1', 'L2', 'L3'].forEach(axis => {
+          $(`${axis}MinSlider`).value = state.axisLimits[axis].min;
+          $(`${axis}MaxSlider`).value = state.axisLimits[axis].max;
+          $(`${axis}MinLabel`).textContent = state.axisLimits[axis].min;
+          $(`${axis}MaxLabel`).textContent = state.axisLimits[axis].max;
+        });
+        
+        $('settingsModal').style.display = '';
+      });
+
+      $('btnCloseSettings').addEventListener('click', () => {
+        $('settingsModal').style.display = 'none';
+      });
+
+      $('btnResetSettings').addEventListener('click', () => {
+        state.invertScript = false;
+        state.scriptDelay = 0;
+        state.axisLimits = {
+          L0: { min: 0, max: 100 },
+          L1: { min: 0, max: 100 },
+          L2: { min: 0, max: 100 },
+          L3: { min: 0, max: 100 },
+        };
+        savePrefs();
+        
+        // Update UI
+        $('invertScriptCheck').checked = false;
+        $('scriptDelayInput').value = 0;
+        ['L0', 'L1', 'L2', 'L3'].forEach(axis => {
+          $(`${axis}MinSlider`).value = 0;
+          $(`${axis}MaxSlider`).value = 100;
+          $(`${axis}MinLabel`).textContent = 0;
+          $(`${axis}MaxLabel`).textContent = 100;
+        });
+      });
+
+      $('invertScriptCheck').addEventListener('change', () => {
+        state.invertScript = $('invertScriptCheck').checked;
+        savePrefs();
+      });
+
+      $('scriptDelayInput').addEventListener('input', () => {
+        state.scriptDelay = Number($('scriptDelayInput').value) || 0;
+        savePrefs();
+      });
+
+      // Axis sliders
+      ['L0', 'L1', 'L2', 'L3'].forEach(axis => {
+        $(`${axis}MinSlider`).addEventListener('input', (e) => {
+          const minVal = Number(e.target.value);
+          const maxVal = state.axisLimits[axis].max;
+          if (minVal > maxVal) {
+            e.target.value = maxVal;
+            return;
+          }
+          state.axisLimits[axis].min = minVal;
+          $(`${axis}MinLabel`).textContent = minVal;
+          savePrefs();
+        });
+
+        $(`${axis}MaxSlider`).addEventListener('input', (e) => {
+          const maxVal = Number(e.target.value);
+          const minVal = state.axisLimits[axis].min;
+          if (maxVal < minVal) {
+            e.target.value = minVal;
+            return;
+          }
+          state.axisLimits[axis].max = maxVal;
+          $(`${axis}MaxLabel`).textContent = maxVal;
+          savePrefs();
+        });
+      });
+
       $('btnPlayPause').addEventListener('click', async () => {
         const v = $('video');
         if (!(v instanceof HTMLVideoElement)) return;
         if (state.noVideo) return;
         if (v.paused) {
           try { await v.play(); } catch {}
+          cancelAutoHome(); // Cancel auto-home when playing
         } else {
           try { v.pause(); } catch {}
+          triggerAutoHome(); // Trigger auto-home when pausing
         }
         // Sync the play/pause state to web UI
         if (state.current) {
@@ -887,6 +1280,17 @@
       $('toggleDrive').textContent = state.drive ? 'Drive: ON' : 'Drive: OFF';
       $('btnFollow').textContent = state.followRemote ? 'Follow remote: ON' : 'Follow remote: OFF';
 
+      // Auto-home UI initialization
+      $('autoHomeEnabled').checked = state.autoHomeEnabled;
+      $('autoHomePosition').value = state.autoHomePosition;
+      $('autoHomeDelay').value = state.autoHomeDelay;
+      $('autoHomeTransition').value = state.autoHomeTransition;
+      $('autoHomeSettings').style.display = state.autoHomeEnabled ? '' : 'none';
+
+      // Auto-connect serial UI initialization
+      $('autoConnectSerial').checked = state.autoConnectSerial;
+      if (state.lastSerialBaud) $('baud').value = state.lastSerialBaud;
+
       setVideoModeUi();
       updateFollowSourceOptions();
 
@@ -898,15 +1302,44 @@
       setStatus('Ready');
       connectWs();
       await listPorts();
+      
+      // Auto-connect to serial if enabled
+      if (state.autoConnectSerial && state.lastSerialPort) {
+        // Wait a bit for port list to be ready
+        setTimeout(async () => {
+          try {
+            // Check if the last used port is still available
+            const select = $('port');
+            const options = Array.from(select.options).map(opt => opt.value);
+            if (options.includes(state.lastSerialPort)) {
+              select.value = state.lastSerialPort;
+              logToConsole('log', `Auto-connecting to ${state.lastSerialPort}...`);
+              await window.mv.serialConnect({ path: state.lastSerialPort, baudRate: state.lastSerialBaud });
+              state.serialConnected = true;
+              setSerialPill(true);
+              setStatus('Serial auto-connected');
+              logToConsole('log', 'Serial auto-connect successful');
+            } else {
+              logToConsole('warn', `Auto-connect failed: ${state.lastSerialPort} not found`);
+            }
+          } catch (err) {
+            logToConsole('error', 'Auto-connect failed:', err);
+          }
+        }, 500);
+      }
+      
       await refresh();
 
       const v = $('video');
       if (v instanceof HTMLVideoElement) {
         const fps = 30;
         const push = () => {
+          // Don't send sync updates if we're currently applying remote state (prevent feedback loop)
+          if (state.isApplyingRemoteState) return;
           if (!state.current) return;
           const timeMs = Math.round((v.currentTime || 0) * 1000);
           const frame = currentFrame(v.currentTime || 0, fps);
+          logToConsole('log', `Manual video ${v.paused ? 'pause' : 'play'} - syncing to remote`);
           // Manual user interactions always sync (force=true), regardless of follow-remote state
           sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame }, true);
         };
@@ -935,20 +1368,6 @@
       }
 
       // Console view
-      $('btnConsole').addEventListener('click', () => {
-        state.consoleVisible = !state.consoleVisible;
-        const consoleView = $('consoleView');
-        const btn = $('btnConsole');
-        if (state.consoleVisible) {
-          consoleView.style.display = '';
-          btn.textContent = 'Hide Console';
-          updateConsoleView();
-        } else {
-          consoleView.style.display = 'none';
-          btn.textContent = 'Show Console';
-        }
-      });
-
       $('btnClearConsole').addEventListener('click', () => {
         state.consoleLogs = [];
         updateConsoleView();
@@ -956,6 +1375,13 @@
       });
 
       logToConsole('log', 'Desktop client initialized');
+      
+      // Check if preload API is available
+      if (window.mv) {
+        logToConsole('log', 'Preload API available:', Object.keys(window.mv).join(', '));
+      } else {
+        logToConsole('error', 'Preload API (window.mv) not available! Check that preload.js is loaded correctly.');
+      }
 
       tick();
     </script>

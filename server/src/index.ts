@@ -33,6 +33,9 @@ const server = http.createServer(app);
 
 // Minimal websocket for live playback pings (optional consumer).
 const wss = new WebSocketServer({ server, path: '/ws' });
+
+// Store client metadata (clientId -> { userAgent, ipAddress })
+const clientMetadata = new Map<string, { userAgent: string; ipAddress: string }>();
 type WsClient = {
   send(data: string): void;
   on(event: 'message', cb: (data: unknown) => void): void;
@@ -40,6 +43,8 @@ type WsClient = {
   readyState: number;
   __mvClientId?: string;
   __mvSessionId?: string;
+  __mvUserAgent?: string;
+  __mvIpAddress?: string;
 };
 
 function safeJsonParse(s: string): any | null {
@@ -91,7 +96,13 @@ function logStartupInfo() {
 
 async function broadcastSyncState(sessionId: string) {
   const state = await getSyncPlaybackState(db, sessionId);
-  const msg = JSON.stringify({ type: 'sync:state', state });
+  // Include all client metadata
+  const clients = Array.from(clientMetadata.entries()).map(([id, meta]) => ({
+    clientId: id,
+    userAgent: meta.userAgent,
+    ipAddress: meta.ipAddress,
+  }));
+  const msg = JSON.stringify({ type: 'sync:state', state, clients });
   for (const c of wss.clients) {
     const client = c as unknown as WsClient;
     // 1 is OPEN in ws lib
@@ -129,9 +140,25 @@ registerVrIntegrations(app, db, {
   onVrSync: async (info) => publishExternalSyncUpdate(info),
 });
 
-wss.on('connection', (raw) => {
+wss.on('connection', (raw, req) => {
   const ws = raw as unknown as WsClient;
+  
+  // Capture user agent and IP address
+  const userAgent = req.headers['user-agent'] || 'Unknown';
+  const ipAddress = (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() 
+    || req.socket.remoteAddress 
+    || 'Unknown';
+  
+  ws.__mvUserAgent = userAgent;
+  ws.__mvIpAddress = ipAddress;
+  
   ws.send(JSON.stringify({ type: 'hello', ts: Date.now() }));
+
+  ws.on('close', () => {
+    if (ws.__mvClientId) {
+      clientMetadata.delete(ws.__mvClientId);
+    }
+  });
 
   ws.on('message', async (data) => {
     const text = typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf8') : '';
@@ -141,7 +168,14 @@ wss.on('connection', (raw) => {
     if (msg.type === 'sync:hello') {
       const clientId = String(msg.clientId ?? '').trim();
       const sessionId = String(msg.sessionId ?? 'default').trim() || 'default';
-      if (clientId) ws.__mvClientId = clientId;
+      if (clientId) {
+        ws.__mvClientId = clientId;
+        // Store metadata for this client
+        clientMetadata.set(clientId, {
+          userAgent: ws.__mvUserAgent || 'Unknown',
+          ipAddress: ws.__mvIpAddress || 'Unknown',
+        });
+      }
       ws.__mvSessionId = sessionId;
 
       const state = await getSyncPlaybackState(db, sessionId);
@@ -181,17 +215,28 @@ async function main() {
 
   await ensureSchema(db);
 
-  // Initial scan on boot.
-  const scanStart = Date.now();
-  const scan = await upsertMediaFromDisk({ db, mediaRoot: env.MEDIA_ROOT });
-  const scanMs = Date.now() - scanStart;
-  // eslint-disable-next-line no-console
-  console.log(`[MediaViewer] Initial scan complete: scanned=${scan.scanned}, upserted=${scan.upserted} (${scanMs}ms)`);
-
+  // Start server immediately
   server.listen(env.PORT, () => {
     // eslint-disable-next-line no-console
-    console.log(`MediaViewer server listening on :${env.PORT}`);
+    console.log(`[MediaViewer] Server listening on :${env.PORT}`);
+    // eslint-disable-next-line no-console
+    console.log(`[MediaViewer] Web UI accessible at http://localhost:${env.PORT}/`);
+    // eslint-disable-next-line no-console
+    console.log(`[MediaViewer] Starting initial media scan in background...`);
   });
+
+  // Initial scan in background (non-blocking).
+  const scanStart = Date.now();
+  upsertMediaFromDisk({ db, mediaRoot: env.MEDIA_ROOT })
+    .then((scan) => {
+      const scanMs = Date.now() - scanStart;
+      // eslint-disable-next-line no-console
+      console.log(`[MediaViewer] Initial scan complete: scanned=${scan.scanned}, upserted=${scan.upserted} (${scanMs}ms)`);
+    })
+    .catch((err) => {
+      // eslint-disable-next-line no-console
+      console.error('[MediaViewer] Initial scan failed:', err);
+    });
 }
 
 main().catch((err) => {

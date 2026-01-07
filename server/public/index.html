@@ -58,6 +58,54 @@
         return id;
       }
 
+      function loadPrefs() {
+        try {
+          const saved = window.localStorage.getItem('mvPrefs');
+          if (saved) {
+            const prefs = JSON.parse(saved);
+            if (typeof prefs.gridMin === 'number' && prefs.gridMin >= 120 && prefs.gridMin <= 360) {
+              state.gridMin = prefs.gridMin;
+            }
+          }
+        } catch {
+          // ignore parse errors
+        }
+      }
+
+      function savePrefs() {
+        try {
+          window.localStorage.setItem('mvPrefs', JSON.stringify({
+            gridMin: state.gridMin,
+          }));
+        } catch {
+          // ignore storage errors
+        }
+      }
+
+      function loadPrefs() {
+        try {
+          const saved = window.localStorage.getItem('mvPrefs');
+          if (saved) {
+            const prefs = JSON.parse(saved);
+            if (typeof prefs.gridMin === 'number' && prefs.gridMin >= 120 && prefs.gridMin <= 360) {
+              state.gridMin = prefs.gridMin;
+            }
+          }
+        } catch {
+          // ignore parse errors
+        }
+      }
+
+      function savePrefs() {
+        try {
+          window.localStorage.setItem('mvPrefs', JSON.stringify({
+            gridMin: state.gridMin,
+          }));
+        } catch {
+          // ignore storage errors
+        }
+      }
+
       function wsUrlFromHttp(base) {
         const u = new URL(base);
         u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -164,7 +212,27 @@
         const maxPage = Math.max(1, Math.ceil(state.total / state.pageSize));
         return `Page ${state.page} / ${maxPage} (${state.total} items)`;
       }
-
+      function generatePageButtons() {
+        const maxPage = Math.max(1, Math.ceil(state.total / state.pageSize));
+        const current = state.page;
+        const buttons = [];
+        
+        // Calculate which page numbers to show (up to 5)
+        let startPage = Math.max(1, current - 2);
+        let endPage = Math.min(maxPage, startPage + 4);
+        
+        // Adjust if we're near the end
+        if (endPage - startPage < 4) {
+          startPage = Math.max(1, endPage - 4);
+        }
+        
+        for (let i = startPage; i <= endPage; i++) {
+          const active = i === current ? ' active' : '';
+          buttons.push(`<button class="btn page-btn${active}" data-page="${i}">${i}</button>`);
+        }
+        
+        return buttons.join('');
+      }
       function thumbKey(id) {
         return `mvThumb:${id}`;
       }
@@ -341,8 +409,11 @@
             <div class="small">${formatPageLabel()}</div>
             <div class="grid" id="grid">${visible.map(card).join('')}</div>
             <div class="pager">
+              <button class="btn" id="first">First</button>
               <button class="btn" id="prev">Prev</button>
+              <div class="page-numbers" id="pageNumbers">${generatePageButtons()}</div>
               <button class="btn" id="next">Next</button>
+              <button class="btn" id="last">Last</button>
             </div>
           </main>
         `;
@@ -389,11 +460,13 @@
         el('gridDec').addEventListener('click', () => {
           state.gridMin = Math.max(120, state.gridMin - 20);
           el('grid').style.setProperty('--card-min', `${state.gridMin}px`);
+          savePrefs();
         });
 
         el('gridInc').addEventListener('click', () => {
           state.gridMin = Math.min(360, state.gridMin + 20);
           el('grid').style.setProperty('--card-min', `${state.gridMin}px`);
+          savePrefs();
         });
 
         el('scan').addEventListener('click', async () => {
@@ -411,18 +484,47 @@
         el('hsLib').addEventListener('click', () => window.__openHereSphereLibrary());
 
         const maxPage = Math.max(1, Math.ceil(state.total / state.pageSize));
+        el('first').disabled = state.page <= 1;
         el('prev').disabled = state.page <= 1;
         el('next').disabled = state.page >= maxPage;
+        el('last').disabled = state.page >= maxPage;
+        
+        el('first').addEventListener('click', async () => {
+          state.page = 1;
+          await loadList();
+          render();
+        });
+        
         el('prev').addEventListener('click', async () => {
           state.page = Math.max(1, state.page - 1);
           await loadList();
           render();
         });
+        
         el('next').addEventListener('click', async () => {
           state.page = Math.min(maxPage, state.page + 1);
           await loadList();
           render();
         });
+        
+        el('last').addEventListener('click', async () => {
+          state.page = maxPage;
+          await loadList();
+          render();
+        });
+        
+        // Page number buttons
+        const pageButtons = document.querySelectorAll('.page-btn');
+        for (const btn of pageButtons) {
+          btn.addEventListener('click', async () => {
+            const page = parseInt(btn.getAttribute('data-page'), 10);
+            if (page && page !== state.page) {
+              state.page = page;
+              await loadList();
+              render();
+            }
+          });
+        }
 
         // Card click-to-open (entire card).
         const cards = Array.from(document.querySelectorAll('.card[data-open-id]'));
@@ -659,6 +761,25 @@
             </a-scene>
           </div>
         `;
+
+        // Set up sync for VR player
+        const vvr = el('vvr');
+        const fps = 30;
+        const mediaId = id;
+
+        const push = () => {
+          if (!(vvr instanceof HTMLVideoElement)) return;
+          const timeMs = Math.round((vvr.currentTime || 0) * 1000);
+          const frame = Math.max(0, Math.floor((vvr.currentTime || 0) * fps));
+          sendSyncUpdate({ mediaId, timeMs, paused: vvr.paused, fps, frame });
+        };
+
+        if (vvr instanceof HTMLVideoElement) {
+          vvr.addEventListener('play', push);
+          vvr.addEventListener('pause', push);
+          vvr.addEventListener('seeked', push);
+          vvr.addEventListener('timeupdate', push);
+        }
       }
 
       function render() {
@@ -729,6 +850,8 @@
       };
 
       (async () => {
+        ensureClientId();
+        loadPrefs();
         connectWs();
         await loadList();
         render();
