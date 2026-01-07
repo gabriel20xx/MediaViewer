@@ -111,9 +111,17 @@ export function registerVrIntegrations(
   // --- DeoVR integration ---
   // DeoVR will request /deovr for a “Selection Scene” style listing.
   app.all(['/deovr', '/deovr/'], async (req, res) => {
-    // If accessed by a regular browser, show a helper page instead of raw JSON
-    const ua = req.get('User-Agent') || '';
-    if (!ua.toLowerCase().includes('deovr')) {
+    // If accessed by a regular browser, show a helper page instead of raw JSON.
+    // We check if the client explicitly prefers JSON (DeoVR) or VR agents.
+    const ua = (req.get('User-Agent') || '').toLowerCase();
+    const accept = (req.get('Accept') || '').toLowerCase();
+    
+    const isVrAgent = ua.includes('deovr') || ua.includes('oculus') || ua.includes('quest') || ua.includes('pico') || ua.includes('vive') || ua.includes('unity') || ua.includes('vr');
+    const wantsJson = accept.includes('application/json') || accept.includes('text/json');
+    const wantsHtml = accept.includes('text/html');
+
+    // If it's a standard browser requesting HTML (and not explicitly identifying as VR), show the help page.
+    if (!isVrAgent && !wantsJson && wantsHtml) {
       return res.send(`<html><body style="background:#111;color:#fff;font-family:sans-serif;padding:2em;">
         <h3>DeoVR Integration</h3>
         <p>This endpoint is intended for the <b>DeoVR</b> VR browser.</p>
