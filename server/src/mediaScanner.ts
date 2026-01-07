@@ -50,6 +50,9 @@ export async function upsertMediaFromDisk(opts: {
 
     const fun = await loadFunscriptIfExists(absPath);
 
+    const sizeBytes = BigInt(stat.size);
+    const modifiedMs = BigInt(Math.trunc(stat.mtimeMs));
+
     await prisma.mediaItem.upsert({
       where: { relPath },
       create: {
@@ -57,16 +60,16 @@ export async function upsertMediaFromDisk(opts: {
         filename: path.basename(absPath),
         ext,
         mediaType,
-        sizeBytes: BigInt(stat.size),
-        modifiedMs: BigInt(stat.mtimeMs),
+        sizeBytes,
+        modifiedMs,
         hasFunscript: Boolean(fun),
       },
       update: {
         filename: path.basename(absPath),
         ext,
         mediaType,
-        sizeBytes: BigInt(stat.size),
-        modifiedMs: BigInt(stat.mtimeMs),
+        sizeBytes,
+        modifiedMs,
         hasFunscript: Boolean(fun),
       },
     });
