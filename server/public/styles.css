@@ -24,7 +24,7 @@ main { padding: 16px; }
 .tag { font-size: 11px; padding: 2px 6px; border-radius: 999px; border: 1px solid #2a2f3a; background: #11131a; }
 .tag--good { border-color: #14532d; background: rgba(20,83,45,0.35); color: #86efac; }
 .tag--bad { border-color: #7f1d1d; background: rgba(127,29,29,0.35); color: #fecaca; }
-.tag--vr { background: #8b5cf6; color: #fff; border-color: #8b5cf6; }
+.tag--vr { border-color: #8b5cf6; background: rgba(139,92,246,0.35); color: #fff; }
 .row { display: flex; gap: 8px; align-items: center; margin-top: auto; justify-content: space-between; }
 .btnPrimary { background: #161a24; border-color: #3b4457; }
 .pager { display: flex; gap: 8px; justify-content: center; padding: 16px 0; align-items: center; }
@@ -38,6 +38,25 @@ video { width: 100%; max-height: 80vh; background: #000; }
 .topbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
 .topbar a { border: 1px solid #2a2f3a; padding: 8px 10px; border-radius: 8px; background: #11131a; }
 select { padding: 10px 12px; border-radius: 8px; border: 1px solid #2a2f3a; background: #11131a; color: #e6e6e6; }
+
+.playerLayout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+@media (min-width: 900px) {
+	.playerLayout { grid-template-columns: minmax(0, 1fr) 340px; align-items: start; }
+}
+
+.playerVideo { border: 1px solid #222; border-radius: 10px; overflow: hidden; }
+.playerStatus { margin-top: 8px; }
+.playerTitle { word-break: break-word; }
+
+.panel { border: 1px solid #222; border-radius: 10px; background: #0f1117; padding: 12px; }
+.panelTitle { font-size: 12px; font-weight: 600; color: #fff; margin-bottom: 8px; }
+
+.playerTags { margin-bottom: 10px; height: auto; overflow: visible; }
+
+.kv { display: flex; flex-direction: column; gap: 8px; }
+.kvRow { display: grid; grid-template-columns: 90px minmax(0, 1fr); gap: 10px; align-items: start; }
+.kvKey { font-size: 11px; opacity: 0.75; }
+.kvVal { font-size: 12px; word-break: break-word; }
 
 .opStatus { display: flex; align-items: center; gap: 8px; }
 .opStatus progress { width: 180px; height: 10px; }

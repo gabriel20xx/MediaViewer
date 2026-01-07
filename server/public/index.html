@@ -28,6 +28,8 @@
         wsSessionId: 'default',
         _applyingRemoteUntil: 0,
         _lastSentAt: 0,
+        lastRemoteSync: null,
+        lastRemoteAt: 0,
         thumbVer: 0,
       };
 
@@ -127,10 +129,12 @@
         ws.addEventListener('open', () => {
           state.wsConnected = true;
           ws.send(JSON.stringify({ type: 'sync:hello', clientId: state.clientId, sessionId: state.wsSessionId }));
+          updateSyncStatus();
         });
 
         ws.addEventListener('close', () => {
           state.wsConnected = false;
+          updateSyncStatus();
           window.setTimeout(() => connectWs(), 1000);
         });
 
@@ -178,13 +182,22 @@
       async function applyRemoteSyncState(remote) {
         if (!remote) return;
         if (remote.fromClientId && remote.fromClientId === state.clientId) return;
+
+        state.lastRemoteSync = remote;
+        state.lastRemoteAt = Date.now();
+        updateSyncStatus();
+
+        // Do not auto-navigate away from the grid when opening the WebUI.
+        // Sync-following only applies once the user is already in player/vr.
+        if (state.view === 'grid') return;
+
         if (!remote.mediaId) return;
 
         const id = String(remote.mediaId);
         const item = await getItemInfo(id);
 
-        // If different media, follow it.
-        if (state.current?.id !== id || state.view === 'grid') {
+        // If different media, follow it (only while already in a player view).
+        if (state.current?.id !== id) {
           state._applyingRemoteUntil = Date.now() + 800;
           if (item?.isVr) {
             // For integrated WebVR support.
@@ -296,6 +309,49 @@
         return `${m}:${String(s).padStart(2, '0')}`;
       }
 
+      function formatBytes(bytes) {
+        const b = Number(bytes);
+        if (!Number.isFinite(b) || b < 0) return '--';
+        const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        let n = b;
+        let u = 0;
+        while (n >= 1024 && u < units.length - 1) {
+          n /= 1024;
+          u++;
+        }
+        const digits = u === 0 ? 0 : (n >= 10 ? 1 : 2);
+        return `${n.toFixed(digits)} ${units[u]}`;
+      }
+
+      function formatDateTime(ms) {
+        const t = Number(ms);
+        if (!Number.isFinite(t) || t <= 0) return '--';
+        try {
+          return new Date(t).toLocaleString();
+        } catch {
+          return '--';
+        }
+      }
+
+      function updateSyncStatus() {
+        const elSync = document.getElementById('syncStatus');
+        if (!elSync) return;
+
+        const parts = [];
+        parts.push(state.wsConnected ? 'Sync: connected' : 'Sync: disconnected');
+        parts.push(`session: ${state.wsSessionId || 'default'}`);
+
+        if (state.lastRemoteSync && state.lastRemoteAt) {
+          const ageMs = Math.max(0, Date.now() - state.lastRemoteAt);
+          const from = state.lastRemoteSync.fromClientId ? `from ${state.lastRemoteSync.fromClientId}` : 'from remote';
+          const paused = Boolean(state.lastRemoteSync.paused);
+          const at = formatDuration((Number(state.lastRemoteSync.timeMs) || 0) / 1000);
+          parts.push(`${from} · ${paused ? 'paused' : 'playing'} · ${at} · ${Math.round(ageMs / 1000)}s ago`);
+        }
+
+        elSync.textContent = parts.join(' · ');
+      }
+
       function getDurationSec(id) {
         const v = state.durationsSec[id];
         return Number.isFinite(v) ? v : null;
@@ -344,9 +400,15 @@
           ? `/api/media/${item.id}/stream`
           : `/api/media/${item.id}/thumb?v=${state.thumbVer}`;
 
-        const thumb = `<img class="thumbMedia" loading="lazy" src="${thumbUrl}" alt="${escapeHtml(item.filename)}" />`;
-        // No client-side processing status needed anymore
-        const thumbStatus = '';
+        const placeholderImg = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==';
+
+        // For videos, defer requesting thumbs until the card is near-visible.
+        // This prevents large bursts of thumbnail generation from blocking other API calls.
+        const thumb = item.mediaType === 'video'
+          ? `<img class="thumbMedia" loading="lazy" src="${placeholderImg}" data-src="${thumbUrl}" alt="${escapeHtml(item.filename)}" />`
+          : `<img class="thumbMedia" loading="lazy" src="${thumbUrl}" alt="${escapeHtml(item.filename)}" />`;
+
+        const thumbStatus = `<div class="thumbStatus">Loading…</div>`;
 
         return `
           <div class="card" role="button" tabindex="0" data-open-id="${escapeHtml(item.id)}" aria-label="Open: ${escapeHtml(item.filename)}">
@@ -377,6 +439,11 @@
       }
 
       function renderGrid() {
+        const active = document.activeElement;
+        const shouldRestoreQ = (active instanceof HTMLInputElement) && active.id === 'q';
+        const restoreStart = shouldRestoreQ ? active.selectionStart : null;
+        const restoreEnd = shouldRestoreQ ? active.selectionEnd : null;
+
         const visible = getGridItems();
         el('app').innerHTML = `
           <header>
@@ -630,9 +697,88 @@
           });
         }
 
-        // initVideoThumbs(); // Removed
-        // initImageThumbs(); // Removed
+        initThumbsForGrid();
+
+        if (shouldRestoreQ) {
+          const qEl = el('q');
+          if (qEl instanceof HTMLInputElement) {
+            qEl.focus({ preventScroll: true });
+            const len = qEl.value.length;
+            const s = typeof restoreStart === 'number' ? Math.min(restoreStart, len) : len;
+            const e = typeof restoreEnd === 'number' ? Math.min(restoreEnd, len) : len;
+            try { qEl.setSelectionRange(s, e); } catch {}
+          }
+        }
+
         prefetchDurationsForPage();
+      }
+
+      function initThumbsForGrid() {
+        const imgs = Array.from(document.querySelectorAll('img.thumbMedia'));
+        for (const img of imgs) {
+          const status = img.parentElement?.querySelector('.thumbStatus');
+          if (!status) continue;
+
+          // Default: show loading.
+          status.textContent = 'Loading…';
+          status.classList.remove('hidden');
+
+          const onLoad = () => {
+            status.classList.add('hidden');
+          };
+          const onError = () => {
+            status.textContent = "Couldn't load";
+            status.classList.remove('hidden');
+          };
+
+          img.addEventListener('load', onLoad, { once: true });
+          img.addEventListener('error', onError, { once: true });
+
+          // If already loaded (from cache), update immediately.
+          try {
+            if (img.complete && img.naturalWidth > 0) onLoad();
+          } catch {}
+        }
+
+        // Throttled loader for deferred thumbs (video thumbs only).
+        const deferred = Array.from(document.querySelectorAll('img.thumbMedia[data-src]'));
+        if (!deferred.length) return;
+
+        const queue = [];
+        let inFlight = 0;
+        const maxInFlight = 4;
+
+        const pump = () => {
+          while (inFlight < maxInFlight && queue.length) {
+            const img = queue.shift();
+            if (!(img instanceof HTMLImageElement) || !img.isConnected) continue;
+
+            const src = img.getAttribute('data-src');
+            if (!src) continue;
+            img.removeAttribute('data-src');
+
+            inFlight++;
+            const done = () => {
+              inFlight = Math.max(0, inFlight - 1);
+              pump();
+            };
+            img.addEventListener('load', done, { once: true });
+            img.addEventListener('error', done, { once: true });
+            img.src = src;
+          }
+        };
+
+        const io = new IntersectionObserver((entries) => {
+          for (const ent of entries) {
+            if (!ent.isIntersecting) continue;
+            const img = ent.target;
+            io.unobserve(img);
+            queue.push(img);
+          }
+          pump();
+        }, { root: null, rootMargin: '300px', threshold: 0.01 });
+
+        for (const img of deferred) io.observe(img);
       }
 
       async function prefetchDurationsForPage() {
@@ -769,6 +915,11 @@
         const id = state.current?.id;
         const item = state.current?.item;
         const vrLink = item?.isVr ? `<a href="#" onclick="window.__openBest('${id}');return false;">Open in VR player</a>` : '';
+        const filename = escapeHtml(item?.filename || '');
+        const tagVr = item?.isVr ? `<span class="tag tag--vr">vr</span>` : '';
+        const tagFun = item?.hasFunscript
+          ? `<span class="tag tag--good">funscript</span>`
+          : `<span class="tag tag--bad">no funscript</span>`;
         el('app').innerHTML = `
           <header>
             <h1>MediaViewer</h1>
@@ -778,10 +929,28 @@
             <div class="topbar">
               <a href="#" onclick="window.__back();return false;">Back</a>
               ${vrLink}
-              <span class="small">${escapeHtml(state.current?.item?.filename || '')}</span>
+              <span class="small playerTitle">${filename}</span>
             </div>
-            <video id="v" controls autoplay playsinline src="/api/media/${id}/stream"></video>
-            <div class="small" id="fs"></div>
+            <div class="playerLayout">
+              <div class="playerMain">
+                <video class="playerVideo" id="v" controls autoplay playsinline src="/api/media/${id}/stream"></video>
+                <div class="small playerStatus" id="syncStatus"></div>
+              </div>
+              <aside class="playerSide">
+                <div class="panel">
+                  <div class="panelTitle">Details</div>
+                  <div class="tags playerTags">${tagVr}${tagFun}</div>
+                  <div class="kv" id="details">
+                    <div class="kvRow"><div class="kvKey">Filename</div><div class="kvVal">${filename}</div></div>
+                    <div class="kvRow"><div class="kvKey">Path</div><div class="kvVal" id="d-rel">${escapeHtml(item?.relPath || '')}</div></div>
+                    <div class="kvRow"><div class="kvKey">Duration</div><div class="kvVal" id="d-dur">Loading…</div></div>
+                    <div class="kvRow"><div class="kvKey">Size</div><div class="kvVal" id="d-size">Loading…</div></div>
+                    <div class="kvRow"><div class="kvKey">Modified</div><div class="kvVal" id="d-mod">Loading…</div></div>
+                    <div class="kvRow"><div class="kvKey">Funscript</div><div class="kvVal" id="d-fs">${item?.hasFunscript ? 'Loading…' : 'None'}</div></div>
+                  </div>
+                </div>
+              </aside>
+            </div>
           </div>
         `;
 
@@ -804,11 +973,56 @@
           v.addEventListener('timeupdate', push);
         }
 
+        updateSyncStatus();
+
+        // Hydrate fileinfo + duration
+        Promise.all([
+          apiJson(`/api/media/${id}/fileinfo`).catch(() => null),
+          apiJson(`/api/media/${id}/probe`).catch(() => null),
+        ]).then(([info, probe]) => {
+          const rel = document.getElementById('d-rel');
+          const dur = document.getElementById('d-dur');
+          const size = document.getElementById('d-size');
+          const mod = document.getElementById('d-mod');
+
+          if (info) {
+            if (rel) rel.textContent = String(info.relPath || '');
+            if (size) size.textContent = formatBytes(info.sizeBytes);
+            if (mod) mod.textContent = formatDateTime(info.modifiedMs);
+          } else {
+            if (size) size.textContent = '--';
+            if (mod) mod.textContent = '--';
+          }
+
+          if (probe && Number.isFinite(Number(probe.durationMs)) && Number(probe.durationMs) > 0) {
+            if (dur) dur.textContent = formatDuration(Number(probe.durationMs) / 1000);
+          } else {
+            if (dur) dur.textContent = '--:--';
+          }
+        }).catch(() => {
+          const dur = document.getElementById('d-dur');
+          const size = document.getElementById('d-size');
+          const mod = document.getElementById('d-mod');
+          if (dur) dur.textContent = '--:--';
+          if (size) size.textContent = '--';
+          if (mod) mod.textContent = '--';
+        });
+
         // Show if funscript exists.
-        fetch(`/api/media/${id}/funscript`).then(r => r.ok ? r.json() : null).then((j) => {
-          if (!j) return;
-          el('fs').textContent = `Funscript loaded: ${j.actions?.length ?? 0} actions`;
-        }).catch(() => {});
+        if (item?.hasFunscript) {
+          fetch(`/api/media/${id}/funscript`).then(r => r.ok ? r.json() : null).then((j) => {
+            const fs = document.getElementById('d-fs');
+            if (!fs) return;
+            if (!j) {
+              fs.textContent = 'Unavailable';
+              return;
+            }
+            fs.textContent = `${j.actions?.length ?? 0} actions`;
+          }).catch(() => {
+            const fs = document.getElementById('d-fs');
+            if (fs) fs.textContent = 'Unavailable';
+          });
+        }
       }
 
       function renderVr() {
@@ -896,7 +1110,7 @@
 
         // If we're inside DeoVR, navigate directly to JSON. The browser will handle it.
         if (uaHas('deovr')) {
-          window.location.href = `/deovr/video/${id}`;
+          window.__openDeoVrVideo(id);
           return;
         }
 
@@ -905,11 +1119,14 @@
       };
 
       window.__openDeoVrLibrary = () => {
-        const url = new URL('/deovr', window.location.origin).toString();
+        const sessionId = encodeURIComponent(state.wsSessionId || 'default');
+        const url = new URL(`/deovr?sessionId=${sessionId}`, window.location.origin).toString();
         window.location.href = `deovr://${url}`;
       };
       window.__openDeoVrVideo = (id) => {
-        const url = new URL(`/deovr/video/${id}`, window.location.origin).toString();
+        const safeId = encodeURIComponent(id);
+        const sessionId = encodeURIComponent(state.wsSessionId || 'default');
+        const url = new URL(`/deovr/video/${safeId}?sessionId=${sessionId}`, window.location.origin).toString();
         window.location.href = `deovr://${url}`;
       };
       window.__openHereSphereLibrary = () => {

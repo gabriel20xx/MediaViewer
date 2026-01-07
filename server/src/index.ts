@@ -1,9 +1,12 @@
 import 'dotenv/config';
+import fs from 'node:fs';
 import http from 'node:http';
+import https from 'node:https';
 import path from 'node:path';
 import express from 'express';
 import cors from 'cors';
 import { WebSocketServer } from 'ws';
+import selfsigned from 'selfsigned';
 import { readEnv } from './env.js';
 import { buildApiRouter } from './api.js';
 import { upsertMediaFromDisk } from './mediaScanner.js';
@@ -28,17 +31,26 @@ app.use('/api', buildApiRouter({ db, mediaRoot: env.MEDIA_ROOT }));
 // Serve Web UI (static files built into /public)
 const publicDir = path.join(process.cwd(), 'public');
 app.use(express.static(publicDir));
-app.get('*', (_req, res) => {
+app.get('*', (req, res, next) => {
+  // IMPORTANT: Keep VR integration endpoints reachable.
+  // DeoVR/HereSphere fetch JSON from these paths; our SPA catch-all must not shadow them.
+  const p = String(req.path || '');
+  if (p === '/deovr' || p.startsWith('/deovr/')) return next();
+  if (p === '/heresphere' || p.startsWith('/heresphere/')) return next();
+  if (p === '/thumb' || p.startsWith('/thumb/')) return next();
+
   res.sendFile(path.join(publicDir, 'index.html'));
 });
 
-const server = http.createServer(app);
+let isHttpsEnabled = false;
+let activeServer: http.Server | https.Server;
 
 // Minimal websocket for live playback pings (optional consumer).
-const wss = new WebSocketServer({ server, path: '/ws' });
+let wss: WebSocketServer;
 
 // Store client metadata (clientId -> { userAgent, ipAddress })
 const clientMetadata = new Map<string, { userAgent: string; ipAddress: string }>();
+const clientsById = new Map<string, Set<WsClient>>();
 type WsClient = {
   send(data: string): void;
   on(event: 'message', cb: (data: unknown) => void): void;
@@ -70,7 +82,8 @@ function redactDatabaseUrl(databaseUrl: string): string {
 }
 
 function logStartupInfo() {
-  const serverUrl = `http://localhost:${env.PORT}`;
+  const scheme = isHttpsEnabled ? 'https' : 'http';
+  const serverUrl = `${scheme}://localhost:${env.PORT}`;
   const ffprobePath = (process.env.FFPROBE_PATH || 'ffprobe').trim() || 'ffprobe';
 
   // eslint-disable-next-line no-console
@@ -78,7 +91,7 @@ function logStartupInfo() {
   // eslint-disable-next-line no-console
   console.log(`[MediaViewer] Node ${process.version} | ${process.platform} ${process.arch} | pid ${process.pid}`);
   // eslint-disable-next-line no-console
-  console.log(`[MediaViewer] HTTP: ${serverUrl}/  (port ${env.PORT})`);
+  console.log(`[MediaViewer] ${scheme.toUpperCase()}: ${serverUrl}/  (port ${env.PORT})`);
   // eslint-disable-next-line no-console
   console.log(`[MediaViewer] WebSocket: ${serverUrl}/ws`);
   // eslint-disable-next-line no-console
@@ -97,19 +110,65 @@ function logStartupInfo() {
   }
 }
 
-async function broadcastSyncState(sessionId: string) {
-  const state = await getSyncPlaybackState(db, sessionId);
-  // Include all client metadata
-  const clients = Array.from(clientMetadata.entries()).map(([id, meta]) => ({
+function ensureSelfSignedHttpsCert(keyPath: string, certPath: string) {
+  const hasKey = fs.existsSync(keyPath);
+  const hasCert = fs.existsSync(certPath);
+  if (hasKey && hasCert) return;
+
+  fs.mkdirSync(path.dirname(keyPath), { recursive: true });
+  fs.mkdirSync(path.dirname(certPath), { recursive: true });
+
+  const existingKey = hasKey ? fs.readFileSync(keyPath, 'utf8') : undefined;
+
+  const attrs = [{ name: 'commonName', value: 'localhost' }];
+  const opts: any = {
+    days: 3650,
+    keySize: 2048,
+    algorithm: 'sha256',
+    extensions: [
+      {
+        name: 'subjectAltName',
+        altNames: [
+          { type: 2, value: 'localhost' },
+          { type: 7, ip: '127.0.0.1' },
+        ],
+      },
+    ],
+  };
+  if (existingKey) opts.key = existingKey;
+  const pems = selfsigned.generate(attrs, opts);
+
+  if (!hasKey) fs.writeFileSync(keyPath, pems.private, 'utf8');
+  if (!hasCert) fs.writeFileSync(certPath, pems.cert, 'utf8');
+}
+
+function buildClientsList() {
+  return Array.from(clientMetadata.entries()).map(([id, meta]) => ({
     clientId: id,
     userAgent: meta.userAgent,
     ipAddress: meta.ipAddress,
   }));
+}
+
+async function broadcastSyncState(sessionId: string) {
+  const state = await getSyncPlaybackState(db, sessionId);
+  // Include all client metadata
+  const clients = buildClientsList();
   const msg = JSON.stringify({ type: 'sync:state', state, clients });
   for (const c of wss.clients) {
     const client = c as unknown as WsClient;
     // 1 is OPEN in ws lib
     if (client.readyState === 1) client.send(msg);
+  }
+}
+
+function sendSyncStateToClient(sessionId: string, toClientId: string, state: any) {
+  const targets = clientsById.get(toClientId);
+  if (!targets || targets.size === 0) return;
+  const clients = buildClientsList();
+  const msg = JSON.stringify({ type: 'sync:state', state: { sessionId, ...state }, clients });
+  for (const ws of targets) {
+    if (ws.readyState === 1) ws.send(msg);
   }
 }
 
@@ -144,7 +203,8 @@ registerVrIntegrations(app, db, {
   ctx: { mediaRoot: env.MEDIA_ROOT },
 });
 
-wss.on('connection', (raw, req) => {
+function registerWsHandlers() {
+  wss.on('connection', (raw, req) => {
   const ws = raw as unknown as WsClient;
   
   // Capture user agent and IP address
@@ -161,6 +221,11 @@ wss.on('connection', (raw, req) => {
   ws.on('close', () => {
     if (ws.__mvClientId) {
       clientMetadata.delete(ws.__mvClientId);
+      const set = clientsById.get(ws.__mvClientId);
+      if (set) {
+        set.delete(ws);
+        if (set.size === 0) clientsById.delete(ws.__mvClientId);
+      }
       if (ws.__mvSessionId) {
         broadcastSyncState(ws.__mvSessionId).catch(console.error);
       }
@@ -176,12 +241,28 @@ wss.on('connection', (raw, req) => {
       const clientId = String(msg.clientId ?? '').trim();
       const sessionId = String(msg.sessionId ?? 'default').trim() || 'default';
       if (clientId) {
+        // Re-key if needed.
+        if (ws.__mvClientId && ws.__mvClientId !== clientId) {
+          const prior = clientsById.get(ws.__mvClientId);
+          if (prior) {
+            prior.delete(ws);
+            if (prior.size === 0) clientsById.delete(ws.__mvClientId);
+          }
+          clientMetadata.delete(ws.__mvClientId);
+        }
         ws.__mvClientId = clientId;
         // Store metadata for this client
         clientMetadata.set(clientId, {
           userAgent: ws.__mvUserAgent || 'Unknown',
           ipAddress: ws.__mvIpAddress || 'Unknown',
         });
+
+        let set = clientsById.get(clientId);
+        if (!set) {
+          set = new Set();
+          clientsById.set(clientId, set);
+        }
+        set.add(ws);
       }
       ws.__mvSessionId = sessionId;
 
@@ -196,10 +277,26 @@ wss.on('connection', (raw, req) => {
       const mediaId = msg.mediaId === null ? null : String(msg.mediaId ?? '').trim();
       if (!clientId || mediaId === '') return;
 
+      const toClientId = typeof msg.toClientId === 'string' ? String(msg.toClientId).trim() : '';
+
       const timeMs = typeof msg.timeMs === 'number' ? msg.timeMs : 0;
       const paused = Boolean(msg.paused);
       const fps = typeof msg.fps === 'number' && Number.isFinite(msg.fps) ? msg.fps : 30;
       const frame = typeof msg.frame === 'number' && Number.isFinite(msg.frame) ? msg.frame : 0;
+
+      // Targeted control: route directly to a single client without updating global session state.
+      if (toClientId) {
+        sendSyncStateToClient(sessionId, toClientId, {
+          mediaId,
+          timeMs,
+          paused,
+          fps,
+          frame,
+          fromClientId: clientId,
+          updatedAt: new Date().toISOString(),
+        });
+        return;
+      }
 
       await upsertSyncPlaybackState(db, {
         sessionId,
@@ -215,19 +312,47 @@ wss.on('connection', (raw, req) => {
       return;
     }
   });
-});
+  });
+}
 
 async function main() {
+  const autoSelfSigned = Boolean(env.HTTPS_AUTO_SELF_SIGNED);
+
+  let keyPath = (env.HTTPS_KEY_PATH || '').trim();
+  let certPath = (env.HTTPS_CERT_PATH || '').trim();
+  if (autoSelfSigned) {
+    const baseDir = path.join(process.cwd(), '.mv-https');
+    if (!keyPath) keyPath = path.join(baseDir, 'localhost.key.pem');
+    if (!certPath) certPath = path.join(baseDir, 'localhost.cert.pem');
+    ensureSelfSignedHttpsCert(keyPath, certPath);
+  }
+
+  isHttpsEnabled = Boolean(keyPath && certPath);
+
+  const server = http.createServer(app);
+  activeServer = isHttpsEnabled
+    ? https.createServer(
+        {
+          key: fs.readFileSync(keyPath),
+          cert: fs.readFileSync(certPath),
+        },
+        app
+      )
+    : server;
+
+  wss = new WebSocketServer({ server: activeServer, path: '/ws' });
+  registerWsHandlers();
+
   logStartupInfo();
 
   await ensureSchema(db);
 
   // Start server immediately
-  server.listen(env.PORT, () => {
+  activeServer.listen(env.PORT, () => {
     // eslint-disable-next-line no-console
     console.log(`[MediaViewer] Server listening on :${env.PORT}`);
     // eslint-disable-next-line no-console
-    console.log(`[MediaViewer] Web UI accessible at http://localhost:${env.PORT}/`);
+    console.log(`[MediaViewer] Web UI accessible at ${isHttpsEnabled ? 'https' : 'http'}://localhost:${env.PORT}/`);
     // eslint-disable-next-line no-console
     console.log(`[MediaViewer] Starting initial media scan in background...`);
   });

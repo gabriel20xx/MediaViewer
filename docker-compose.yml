@@ -17,6 +17,7 @@ services:
       DATABASE_URL: postgresql://mediaviewer:mediaviewer@db:5432/mediaviewer
       MEDIA_ROOT: /media
       PORT: 3000
+      HTTPS_AUTO_SELF_SIGNED: "1"
     ports:
       - "3000:3000"
     depends_on:

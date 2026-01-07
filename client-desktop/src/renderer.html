@@ -28,6 +28,10 @@
       .pill { display: inline-block; padding: 2px 8px; border: 1px solid #2a2f3a; border-radius: 999px; font-size: 11px; margin-left: 6px; }
       .pill.connected { background: #10b981; color: #fff; border-color: #059669; }
       .pill.disconnected { background: #ef4444; color: #fff; border-color: #dc2626; }
+      .pill.tag-good { border-color: #14532d; background: rgba(20,83,45,0.35); color: #86efac; }
+      .pill.tag-bad { border-color: #7f1d1d; background: rgba(127,29,29,0.35); color: #fecaca; }
+      .pill.tag-vr { border-color: #8b5cf6; background: rgba(139,92,246,0.35); color: #fff; }
+      .pill.tag-muted { border-color: #374151; background: rgba(55,65,81,0.35); color: #d1d5db; }
       .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
       .card { border: 1px solid #222; border-radius: 12px; padding: 12px; background: #0f1117; }
       .card.console-card { display: flex; flex-direction: column; min-height: 150px; overflow: hidden; }
@@ -121,6 +125,8 @@
                 <input type="number" id="autoHomeDelay" min="0" max="60" step="0.5" value="2" style="margin-bottom: 8px;" />
                 <div class="small" style="margin-bottom: 4px;">Transition time (ms):</div>
                 <input type="number" id="autoHomeTransition" min="100" max="10000" step="100" value="2000" />
+                <div class="small" style="margin-top: 10px; margin-bottom: 4px;">Resume delay (ms):</div>
+                <input type="number" id="serialResumeDelay" min="0" max="10000" step="50" value="0" />
               </div>
             </div>
           </div>
@@ -188,6 +194,7 @@
           <div class="meter-fill" id="funscriptMeter"></div>
         </div>
         <div class="meter-label" id="funscriptLabel">Value: 0% (000)</div>
+        <canvas id="funscriptGraph" width="640" height="140" style="width:100%; height:140px; border:1px solid #333; border-radius:8px; background:#0f1117;"></canvas>
         <div class="small" id="noVideoHint" style="display:none;">No-video mode: using sync playback time only (no /stream requests).</div>
         <div class="small" id="playback"></div>
       </div>
@@ -304,6 +311,10 @@
         autoHomeDelay: 2,
         autoHomeTransition: 2000,
         autoHomeTimer: null,
+        serialResumeDelayMs: 0,
+        serialResumeHoldUntil: 0,
+        serialDriveTimer: null,
+        _serialLastPaused: true,
         invertScript: false,
         scriptDelay: 0,
         autoConnectSerial: false,
@@ -336,7 +347,7 @@
         durationCache: new Map(),
         durationInFlightFor: null,
 
-        followSource: 'any',
+        followSource: '',
         seenSources: new Map(),
         clientsMetadata: new Map(),
 
@@ -354,6 +365,11 @@
       const funscriptStatusEl = $('funscriptStatus');
       const funscriptMeterEl = $('funscriptMeter');
       const funscriptLabelEl = $('funscriptLabel');
+
+      function getControlTargetClientId() {
+        const id = String(state.followSource || '').trim();
+        return id ? id : null;
+      }
 
       function logToConsole(level, ...args) {
         const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
@@ -447,6 +463,7 @@
             if (typeof p.autoHomePosition === 'number') state.autoHomePosition = p.autoHomePosition;
             if (typeof p.autoHomeDelay === 'number') state.autoHomeDelay = p.autoHomeDelay;
             if (typeof p.autoHomeTransition === 'number') state.autoHomeTransition = p.autoHomeTransition;
+            if (typeof p.serialResumeDelayMs === 'number') state.serialResumeDelayMs = p.serialResumeDelayMs;
             if (typeof p.invertScript === 'boolean') state.invertScript = p.invertScript;
             if (typeof p.scriptDelay === 'number') state.scriptDelay = p.scriptDelay;
             if (typeof p.interpolationMode === 'string') state.interpolationMode = p.interpolationMode;
@@ -477,6 +494,7 @@
           autoHomePosition: state.autoHomePosition,
           autoHomeDelay: state.autoHomeDelay,
           autoHomeTransition: state.autoHomeTransition,
+          serialResumeDelayMs: state.serialResumeDelayMs,
           invertScript: state.invertScript,
           scriptDelay: state.scriptDelay,
           interpolationMode: state.interpolationMode,
@@ -492,6 +510,117 @@
           clearTimeout(state.autoHomeTimer);
           state.autoHomeTimer = null;
         }
+      }
+
+      async function runAutoHomeNow() {
+        cancelAutoHome();
+
+        if (!state.autoHomeEnabled) return;
+        if (!state.drive) return;
+        if (!state.serialConnected) return;
+        if (!window.mv) return;
+
+        try {
+          const axis = String(state.axis || 'L0').toUpperCase();
+          const pos = Math.max(0, Math.min(100, Math.round(state.autoHomePosition)));
+          const scaled = Math.round((pos / 100) * 999);
+          const vvv = String(scaled).padStart(3, '0');
+          const interval = Math.max(100, Math.min(10000, Math.round(state.autoHomeTransition)));
+          const iii = String(interval).padStart(5, '0');
+          const line = `${axis}${vvv}I${iii}`;
+          logToConsole('log', `Auto-home executing (immediate): ${line}`);
+          await window.mv.tcodeSend(line);
+        } catch (err) {
+          logToConsole('error', 'Auto-home failed:', err);
+        }
+      }
+
+      function getNoVideoTimeMsAndPaused() {
+        const paused = Boolean(state.remotePaused);
+        const base = Number(state.remoteTimeMs) || 0;
+        if (paused) return { timeMs: base, paused: true };
+        const last = Number(state.remoteLastUpdateAt) || Date.now();
+        return { timeMs: base + Math.max(0, Date.now() - last), paused: false };
+      }
+
+      async function serialDriveTick() {
+        if (!state.drive) return;
+        if (!state.serialConnected) return;
+        if (!state.funscript?.actions?.length) return;
+
+        let timeMs = 0;
+        let paused = true;
+
+        const v = $('video');
+        if (!state.noVideo && v instanceof HTMLVideoElement) {
+          timeMs = Math.round((v.currentTime || 0) * 1000);
+          paused = Boolean(v.paused);
+        } else if (state.noVideo && state.followRemote) {
+          const r = getNoVideoTimeMsAndPaused();
+          timeMs = r.timeMs;
+          paused = r.paused;
+        }
+
+        // Apply resume delay when transitioning from paused -> playing.
+        if (state._serialLastPaused && !paused) {
+          const delay = Math.max(0, Math.round(Number(state.serialResumeDelayMs) || 0));
+          state.serialResumeHoldUntil = Date.now() + delay;
+        }
+        state._serialLastPaused = paused;
+
+        if (paused) return;
+        if (Date.now() < (Number(state.serialResumeHoldUntil) || 0)) return;
+
+        const actions = state.funscript.actions;
+        const adjustedTimeMs = timeMs - state.scriptDelay;
+        const itp = interpolatePos(actions, adjustedTimeMs, state.funIndex, state.interpolationMode, state.funscriptDerivatives);
+        state.funIndex = itp.idx;
+
+        const axis = String(state.axis || 'L0').toUpperCase();
+        let pos = itp.pos;
+        if (!Number.isFinite(pos)) pos = 0;
+        pos = clamp(pos, 0, 100);
+
+        if (state.invertScript) {
+          pos = 100 - pos;
+        }
+
+        const limits = state.axisLimits[axis] || { min: 0, max: 100 };
+        const range = (limits.max - limits.min);
+        pos = limits.min + (pos / 100) * range;
+        pos = clamp(pos, 0, 100);
+
+        const now = Date.now();
+        const lastAt = Number(state.lastTcodeSentAt) || 0;
+        const lastPos = (typeof state.lastTcodeSentPos === 'number' && Number.isFinite(state.lastTcodeSentPos))
+          ? state.lastTcodeSentPos
+          : null;
+
+        const shouldSendByTime = (now - lastAt) >= 33; // ~30 Hz
+        const shouldSendByDelta = lastPos === null ? true : Math.abs(pos - lastPos) >= 0.5;
+        if (shouldSendByTime && shouldSendByDelta) {
+          state.lastTcodeSentAt = now;
+          state.lastTcodeSentPos = pos;
+
+          const scaled = Math.round((pos / 100) * 999);
+          const vvv = String(scaled).padStart(3, '0');
+          const line = `${axis}${vvv}`;
+          try { await window.mv.tcodeSend(line); } catch {}
+        }
+      }
+
+      function startSerialDriveLoop() {
+        try {
+          if (state.serialDriveTimer) {
+            clearInterval(state.serialDriveTimer);
+            state.serialDriveTimer = null;
+          }
+        } catch {}
+
+        // Run independent from requestAnimationFrame; rAF can pause when minimized.
+        state.serialDriveTimer = setInterval(() => {
+          serialDriveTick().catch(() => {});
+        }, 33);
       }
 
       async function triggerAutoHome() {
@@ -593,7 +722,7 @@
         sel.innerHTML = html;
 
         // If currently selected source is no longer valid/active, reset to none.
-        if (state.followSource && state.followSource !== 'any' && !state.seenSources.has(state.followSource)) {
+          if (state.followSource && !state.seenSources.has(state.followSource)) {
            state.followSource = '';
            savePrefs();
            sel.value = '';
@@ -644,15 +773,6 @@
           setStatus('WS connected');
           setWsPill(true);
           ws.send(JSON.stringify({ type: 'sync:hello', clientId: state.clientId, sessionId: state.sessionId }));
-          
-          // Send initial empty sync state to announce presence/reset
-          sendSyncUpdate({ 
-              mediaId: state.current?.id || null, 
-              timeMs: 0, 
-              paused: true, 
-              fps: 30, 
-              frame: 0 
-          }, true);
         });
 
         ws.addEventListener('close', () => {
@@ -700,47 +820,54 @@
         });
       }
 
-      function sendSyncUpdate(update, force = false) {
+      function sendSyncUpdate(update, force = false, toClientId = null) {
         if (!state.wsConnected || !state.ws || state.ws.readyState !== 1) return;
         if (!force && Date.now() < state.applyingRemoteUntil) return;
         const now = Date.now();
         if (!force && now - state.lastSyncSentAt < 200) return;
         state.lastSyncSentAt = now;
-        state.ws.send(JSON.stringify({
+        const payload = {
           type: 'sync:update',
           sessionId: state.sessionId,
           clientId: state.clientId,
           ...update,
-        }));
+        };
+        const target = typeof toClientId === 'string' ? toClientId.trim() : '';
+        if (target) payload.toClientId = target;
+        state.ws.send(JSON.stringify(payload));
       }
 
       async function applyRemoteSyncState(remote) {
-        if (!state.followRemote) return;
-        
+        function unloadCurrentMedia(reason) {
+          if (!state.current) return;
+          state.current = null;
+          state.funscript = null;
+          state.funscriptPointer = -1;
+          state.durationMs = null;
+          state.lastAppliedRemotePaused = null;
+          $('now').textContent = 'Now: (Nothing)';
+
+          const v = $('video');
+          if (v instanceof HTMLVideoElement) {
+            try {
+              v.pause();
+              v.removeAttribute('src');
+              v.load();
+            } catch {}
+          }
+
+          updateFunscriptUi(0);
+          renderList();
+          if (reason) logToConsole('log', reason);
+        }
+
         // Handle empty/null remote state (deselect current media)
         if (!remote || !remote.mediaId) {
-          if (state.current) {
-             state.current = null;
-             state.funscript = null;
-             state.funscriptPointer = -1;
-             state.durationMs = null;
-             state.lastAppliedRemotePaused = null;
-             $('now').textContent = 'Now: (Nothing)';
-             
-             // Reset player
-             const v = $('video');
-             if (v instanceof HTMLVideoElement) {
-               v.pause();
-               v.removeAttribute('src');
-               v.load();
-             }
-             
-             updateFunscriptUi(0);
-             renderList();
-             logToConsole('log', 'Remote cleared media - resetting player');
-          }
+          unloadCurrentMedia('Remote cleared media - resetting player');
           return;
         }
+
+        if (!state.followRemote) return;
 
         if (remote.fromClientId && remote.fromClientId === state.clientId) return;
 
@@ -865,11 +992,11 @@
 
       function renderList() {
         $('list').innerHTML = state.items.map((it) => {
-          const fs = it.hasFunscript ? `<span class='pill' style='background:#10b981;color:#fff;'>funscript</span>` : '';
-          const vr = it.isVr ? `<span class='pill' style='background:#8b5cf6;color:#fff;'>VR</span>` : '';
+          const fs = it.hasFunscript ? `<span class='pill tag-good'>funscript</span>` : `<span class='pill tag-bad'>no funscript</span>`;
+          const vr = it.isVr ? `<span class='pill tag-vr'>VR</span>` : '';
           const active = state.current?.id === it.id ? 'active' : '';
           const dur = formatDuration(getDurationSec(it.id) ?? NaN);
-          const durTag = dur !== '--:--' ? `<span class='pill' style='background:#374151;color:#d1d5db;'>${dur}</span>` : '';
+          const durTag = dur !== '--:--' ? `<span class='pill tag-muted'>${dur}</span>` : '';
           return `<div class='item ${active}' data-id='${it.id}'>
             <div style="font-weight:500; margin-bottom:4px; word-break:break-all;">${esc(it.filename)}</div>
             <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
@@ -961,7 +1088,7 @@
         }
 
         if (!suppressSync && !state.followRemote) {
-          sendSyncUpdate({ mediaId: id, timeMs: 0, paused: true, fps: 30, frame: 0 });
+          sendSyncUpdate({ mediaId: id, timeMs: 0, paused: true, fps: 30, frame: 0 }, false, getControlTargetClientId());
         }
 
         try {
@@ -1311,8 +1438,116 @@
         }
       }
 
+      function clearFunscriptGraph() {
+        const canvas = $('funscriptGraph');
+        if (!(canvas instanceof HTMLCanvasElement)) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = canvas.clientWidth || 640;
+        const cssH = canvas.clientHeight || 140;
+        canvas.width = Math.round(cssW * dpr);
+        canvas.height = Math.round(cssH * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, cssW, cssH);
+      }
+
+      function drawFunscriptGraph(actions, ms) {
+        const canvas = $('funscriptGraph');
+        if (!(canvas instanceof HTMLCanvasElement)) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        // Throttle redraw
+        const now = Date.now();
+        if (!state._lastFsGraphDrawAt) state._lastFsGraphDrawAt = 0;
+        if (now - state._lastFsGraphDrawAt < 80) return;
+        state._lastFsGraphDrawAt = now;
+
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = canvas.clientWidth || 640;
+        const cssH = canvas.clientHeight || 140;
+        canvas.width = Math.round(cssW * dpr);
+        canvas.height = Math.round(cssH * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        ctx.clearRect(0, 0, cssW, cssH);
+
+        // Background
+        ctx.fillStyle = '#0f1117';
+        ctx.fillRect(0, 0, cssW, cssH);
+
+        // Grid
+        ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+        ctx.lineWidth = 1;
+        for (let i = 1; i < 5; i++) {
+          const y = (cssH * i) / 5;
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(cssW, y);
+          ctx.stroke();
+        }
+
+        const windowMs = 10_000;
+        const half = windowMs / 2;
+        const maxAt = Number(actions[actions.length - 1]?.at) || 0;
+        const xMin = Math.max(0, ms - half);
+        const xMax = Math.max(xMin + 1, Math.min(maxAt, ms + half));
+
+        const pad = 8;
+        const w = cssW - pad * 2;
+        const h = cssH - pad * 2;
+        const xToPx = (t) => pad + ((t - xMin) / (xMax - xMin)) * w;
+        const yToPx = (p) => pad + (1 - p / 100) * h;
+
+        // Sample curve
+        const sampleCount = 160;
+        let pointer = 0;
+        let prev = null;
+
+        for (let i = 0; i <= sampleCount; i++) {
+          const t = xMin + ((xMax - xMin) * i) / sampleCount;
+          const r = interpolatePos(actions, t, pointer, state.interpolationMode, state.funscriptDerivatives);
+          pointer = r.idx;
+          const pos = clamp(Number(r.pos) || 0, 0, 100);
+          const pt = { t, pos, x: xToPx(t), y: yToPx(pos) };
+          if (prev) {
+            const dt = Math.max(1, pt.t - prev.t);
+            const v = Math.abs(pt.pos - prev.pos) / dt; // pos per ms
+            const vNorm = Math.min(1, v * 300); // heuristic
+            const hue = Math.round(200 - 200 * vNorm); // slow=blue-ish, fast=red
+            ctx.strokeStyle = `hsl(${hue}, 90%, 60%)`;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(prev.x, prev.y);
+            ctx.lineTo(pt.x, pt.y);
+            ctx.stroke();
+          }
+          prev = pt;
+        }
+
+        // Current time marker
+        const cx = xToPx(Math.max(xMin, Math.min(xMax, ms)));
+        ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(cx, pad);
+        ctx.lineTo(cx, pad + h);
+        ctx.stroke();
+
+        // Current position marker
+        const itp = interpolatePos(actions, ms, state.funscriptPointer, state.interpolationMode, state.funscriptDerivatives);
+        const curPos = clamp(Number(itp.pos) || 0, 0, 100);
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.beginPath();
+        ctx.arc(cx, yToPx(curPos), 3.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
       function updateFunscriptUi(timeMs) {
         if (!funscriptStatusEl || !funscriptMeterEl || !funscriptLabelEl) return;
+
+        // (Graph drawing is handled by clearFunscriptGraph/drawFunscriptGraph)
 
         const actions = state.funscript?.actions;
         if (!actions || !Array.isArray(actions) || actions.length === 0) {
@@ -1322,6 +1557,7 @@
           funscriptLabelEl.textContent = `${axis}: 0% (000)`;
           state.funscriptPointer = -1;
           state.lastFunscriptValue = 0;
+          clearFunscriptGraph();
           return;
         }
 
@@ -1340,6 +1576,8 @@
         const tcodeVal = String(Math.round((pct / 100) * 999)).padStart(3, '0');
         const axis = String(state.axis || 'L0').toUpperCase();
         funscriptLabelEl.textContent = `${axis}: ${Math.round(pct)}% (${tcodeVal})`;
+
+        drawFunscriptGraph(actions, ms);
       }
 
       function formatTime(ms) {
@@ -1432,50 +1670,7 @@
           if (!state.followRemote && !state.noVideo) {
             // Don't send automatic updates if we're still applying remote state
             if (Date.now() >= state.applyingRemoteUntil) {
-              sendSyncUpdate({ mediaId: state.current.id, timeMs, paused, fps, frame });
-            }
-          }
-
-          // Drive serial from funscript (spline-interpolated).
-          if (state.drive && !paused && state.funscript?.actions?.length) {
-            const actions = state.funscript.actions;
-            const adjustedTimeMs = timeMs - state.scriptDelay;
-            const itp = interpolatePos(actions, adjustedTimeMs, state.funIndex, state.interpolationMode, state.funscriptDerivatives);
-            state.funIndex = itp.idx;
-
-            const axis = String(state.axis || 'L0').toUpperCase();
-            let pos = itp.pos;
-            if (!Number.isFinite(pos)) pos = 0;
-            pos = clamp(pos, 0, 100);
-
-            // Apply inversion if enabled
-            if (state.invertScript) {
-              pos = 100 - pos;
-            }
-
-            // Apply axis-specific min/max limits
-            const limits = state.axisLimits[axis] || { min: 0, max: 100 };
-            const range = (limits.max - limits.min);
-            pos = limits.min + (pos / 100) * range;
-            pos = clamp(pos, 0, 100);
-
-            // Throttle updates to avoid serial spam, but keep motion smooth.
-            const now = Date.now();
-            const lastAt = Number(state.lastTcodeSentAt) || 0;
-            const lastPos = (typeof state.lastTcodeSentPos === 'number' && Number.isFinite(state.lastTcodeSentPos))
-              ? state.lastTcodeSentPos
-              : null;
-
-            const shouldSendByTime = (now - lastAt) >= 33; // ~30 Hz
-            const shouldSendByDelta = lastPos === null ? true : Math.abs(pos - lastPos) >= 0.5;
-            if (shouldSendByTime && shouldSendByDelta) {
-              state.lastTcodeSentAt = now;
-              state.lastTcodeSentPos = pos;
-
-              const scaled = Math.round((pos / 100) * 999);
-              const vvv = String(scaled).padStart(3, '0');
-              const line = `${axis}${vvv}`;
-              try { await window.mv.tcodeSend(line); } catch {}
+              sendSyncUpdate({ mediaId: state.current.id, timeMs, paused, fps, frame }, false, getControlTargetClientId());
             }
           }
         }
@@ -1607,6 +1802,16 @@
       $('autoHomePosition').addEventListener('input', () => {
         state.autoHomePosition = Number($('autoHomePosition').value) || 0;
         savePrefs();
+
+        // If paused and auto-home is enabled, apply the new home position immediately.
+        let paused = true;
+        const v = $('video');
+        if (!state.noVideo && v instanceof HTMLVideoElement) paused = Boolean(v.paused);
+        else if (state.noVideo && state.followRemote) paused = Boolean(state.remotePaused);
+
+        if (paused && state.autoHomeEnabled) {
+          runAutoHomeNow();
+        }
       });
 
       $('autoHomeDelay').addEventListener('input', () => {
@@ -1616,6 +1821,11 @@
 
       $('autoHomeTransition').addEventListener('input', () => {
         state.autoHomeTransition = Number($('autoHomeTransition').value) || 1000;
+        savePrefs();
+      });
+
+      $('serialResumeDelay').addEventListener('input', () => {
+        state.serialResumeDelayMs = Number($('serialResumeDelay').value) || 0;
         savePrefs();
       });
 
@@ -1732,7 +1942,7 @@
           const fps = 30;
           const timeMs = Math.round((v.currentTime || 0) * 1000);
           const frame = currentFrame(v.currentTime || 0, fps);
-          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame }, true);
+          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame }, true, getControlTargetClientId());
         }
       });
 
@@ -1779,7 +1989,7 @@
             const fps = 30;
             const timeMs = Math.round((v.currentTime || 0) * 1000);
             const frame = currentFrame(v.currentTime || 0, fps);
-            sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame });
+            sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame }, false, getControlTargetClientId());
           }
         }
       });
@@ -1838,6 +2048,7 @@
       $('autoHomePosition').value = state.autoHomePosition;
       $('autoHomeDelay').value = state.autoHomeDelay;
       $('autoHomeTransition').value = state.autoHomeTransition;
+      $('serialResumeDelay').value = state.serialResumeDelayMs;
       $('autoHomeSettings').style.display = 'none'; // always start hidden unless manually toggled
       $('btnToggleAutoHomeSettings').textContent = 'Show';
 
@@ -1898,7 +2109,7 @@
           if (v.paused) triggerAutoHome();
           else cancelAutoHome();
           // Manual user interactions always sync (force=true), regardless of follow-remote state
-          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame }, true);
+          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame }, true, getControlTargetClientId());
         };
         v.addEventListener('play', push);
         v.addEventListener('pause', push);
@@ -1909,17 +2120,32 @@
       const progressBar = $('progress');
       if (progressBar instanceof HTMLInputElement) {
         progressBar.addEventListener('input', () => {
-          if (state.noVideo || !state.current) return;
-          const v = $('video');
-          if (!(v instanceof HTMLVideoElement)) return;
           const seekMs = Number(progressBar.value);
           if (!Number.isFinite(seekMs)) return;
           try {
+            if (!state.current) return;
+
+            if (state.noVideo) {
+              // Don't fight the remote driver.
+              if (state.followRemote) return;
+
+              state.remoteTimeMs = Math.max(0, Math.round(seekMs));
+              state.remoteLastUpdateAt = Date.now();
+              state.remotePaused = true;
+
+              const fps = 30;
+              const frame = currentFrame(seekMs / 1000, fps);
+              sendSyncUpdate({ mediaId: state.current.id, timeMs: seekMs, paused: true, fps, frame }, true, getControlTargetClientId());
+              return;
+            }
+
+            const v = $('video');
+            if (!(v instanceof HTMLVideoElement)) return;
             v.currentTime = seekMs / 1000;
             // Immediately sync the seek to web UI
             const fps = 30;
             const frame = currentFrame(seekMs / 1000, fps);
-            sendSyncUpdate({ mediaId: state.current.id, timeMs: seekMs, paused: v.paused, fps, frame }, true);
+            sendSyncUpdate({ mediaId: state.current.id, timeMs: seekMs, paused: v.paused, fps, frame }, true, getControlTargetClientId());
           } catch {}
         });
       }
@@ -1939,6 +2165,8 @@
       } else {
         logToConsole('error', 'Preload API (window.mv) not available! Check that preload.js is loaded correctly.');
       }
+
+      startSerialDriveLoop();
 
       tick();
     </script>

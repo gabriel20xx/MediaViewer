@@ -32,6 +32,7 @@ FROM base AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV HTTPS_AUTO_SELF_SIGNED=1
 
 # Keep only prod deps in runtime
 COPY package.json package-lock.json* ./
@@ -42,9 +43,9 @@ RUN npm prune --omit=dev
 COPY --from=build --chown=node:node /app/public ./public
 COPY --from=build --chown=node:node /app/dist ./dist
 
-# Writable cache dir for thumbnails if configured to use /app/cache
-RUN mkdir -p /app/cache/thumbs \
-	&& chown -R node:node /app/cache
+# Writable dirs for runtime caches + auto-generated HTTPS certs
+RUN mkdir -p /app/cache/thumbs /app/.mv-https \
+	&& chown -R node:node /app/cache /app/.mv-https
 
 EXPOSE 3000
 
