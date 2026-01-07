@@ -142,3 +142,31 @@ export async function probeVrWithFfprobe(absPath: string): Promise<VrProbe | nul
     reason,
   };
 }
+
+export async function probeDurationMsWithFfprobe(absPath: string): Promise<number | null> {
+  const ffprobe = (process.env.FFPROBE_PATH || 'ffprobe').trim() || 'ffprobe';
+  const args = ['-v', 'error', '-print_format', 'json', '-show_format', '-i', absPath];
+
+  const out = await new Promise<string | null>((resolve) => {
+    const child = spawn(ffprobe, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+
+    child.stdout.on('data', (d) => (stdout += d.toString('utf8')));
+    child.on('error', () => resolve(null));
+    child.on('close', (code) => {
+      if (code !== 0) return resolve(null);
+      if (!stdout.trim()) return resolve(null);
+      resolve(stdout);
+    });
+  });
+
+  if (!out) return null;
+  try {
+    const json: any = JSON.parse(out);
+    const sec = asNum(json?.format?.duration);
+    if (sec === null || !Number.isFinite(sec) || sec <= 0) return null;
+    return Math.round(sec * 1000);
+  } catch {
+    return null;
+  }
+}

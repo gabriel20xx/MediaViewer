@@ -7,6 +7,7 @@ import { loadFunscriptIfExists } from './funscript.js';
 import type { Db } from './db.js';
 import { newId } from './ids.js';
 import { getSyncPlaybackState, upsertSyncPlaybackState } from './syncState.js';
+import { probeDurationMsWithFfprobe } from './ffprobe.js';
 
 export function buildApiRouter(opts: {
   db: Db;
@@ -276,6 +277,25 @@ export function buildApiRouter(opts: {
     } catch {
       res.status(404).json({ error: 'Missing on disk' });
     }
+  });
+
+  // ffprobe-based metadata (currently used for duration in desktop no-video mode)
+  router.get('/media/:id/probe', async (req, res) => {
+    const id = req.params.id;
+    const itemRes = await db.pool.query(
+      `SELECT rel_path, media_type FROM media_items WHERE id = $1 LIMIT 1`,
+      [id]
+    );
+    const item = itemRes.rows[0];
+    if (!item) return res.status(404).json({ error: 'Not found' });
+
+    if (String(item.media_type) !== 'video') {
+      return res.json({ id, durationMs: null });
+    }
+
+    const abs = path.join(mediaRoot, item.rel_path);
+    const durationMs = await probeDurationMsWithFfprobe(abs);
+    res.json({ id, durationMs });
   });
 
   return router;

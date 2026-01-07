@@ -22,6 +22,7 @@
       .item.active { outline: 2px solid #2a2f3a; }
       .item small { opacity: 0.8; }
       video { width: 100%; max-height: 70vh; background: #000; }
+      input[type="range"] { width: 100%; }
       .small { font-size: 12px; opacity: 0.85; }
       .pill { display: inline-block; padding: 2px 8px; border: 1px solid #2a2f3a; border-radius: 999px; font-size: 11px; margin-left: 6px; }
       .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -136,6 +137,7 @@
         </div>
 
         <video id="video" controls></video>
+        <input id="progress" type="range" min="0" max="1" value="0" step="1" disabled />
         <div class="small" id="noVideoHint" style="display:none;">No-video mode: using sync playback time only (no /stream requests).</div>
         <div class="small" id="playback"></div>
       </div>
@@ -170,6 +172,10 @@
         lastAppliedRemotePaused: null,
         serialConnected: false,
 
+        durationMs: null,
+        durationCache: new Map(),
+        durationInFlightFor: null,
+
         followSource: 'any',
         seenSources: new Map(),
       };
@@ -186,6 +192,27 @@
         const res = await fetch(url.toString(), opts);
         if (!res.ok) throw new Error(await res.text());
         return res.json();
+      }
+
+      async function ensureDurationMs(mediaId) {
+        if (!mediaId) return;
+        if (state.durationCache.has(mediaId)) {
+          state.durationMs = state.durationCache.get(mediaId);
+          return;
+        }
+        if (state.durationInFlightFor === mediaId) return;
+        state.durationInFlightFor = mediaId;
+        try {
+          const r = await apiJson(`/api/media/${encodeURIComponent(mediaId)}/probe`);
+          const ms = typeof r?.durationMs === 'number' && Number.isFinite(r.durationMs) && r.durationMs > 0 ? Math.round(r.durationMs) : null;
+          state.durationCache.set(mediaId, ms);
+          state.durationMs = ms;
+        } catch {
+          state.durationCache.set(mediaId, null);
+          state.durationMs = null;
+        } finally {
+          if (state.durationInFlightFor === mediaId) state.durationInFlightFor = null;
+        }
       }
 
       function setStatus(s) { statusEl.textContent = s; }
@@ -433,6 +460,7 @@
         state.current = it || { id, filename: id, mediaType: 'video', hasFunscript: false };
         state.funscript = null;
         state.funIndex = -1;
+        state.durationMs = null;
         $('now').textContent = it ? `Now: ${it.filename}` : `Now: ${id}`;
 
         const v = $('video');
@@ -443,6 +471,9 @@
               v.removeAttribute('src');
               v.load();
             } catch {}
+
+            // No-video mode: fetch duration via ffprobe so we can render a real progress bar.
+            ensureDurationMs(id);
           } else {
             v.src = new URL(`/api/media/${id}/stream`, state.serverUrl).toString();
           }
@@ -485,6 +516,24 @@
         }
 
         const frame = currentFrame(timeMs / 1000, fps);
+
+        // Update progress bar.
+        const progress = $('progress');
+        if (progress instanceof HTMLInputElement) {
+          let durationMs = state.durationMs;
+          if (!state.noVideo && v instanceof HTMLVideoElement) {
+            const d = Number(v.duration);
+            if (Number.isFinite(d) && d > 0) durationMs = Math.round(d * 1000);
+          }
+          if (durationMs && durationMs > 0) {
+            progress.max = String(durationMs);
+            progress.value = String(Math.max(0, Math.min(durationMs, timeMs)));
+          } else {
+            // Unknown duration yet; keep a stable bar until ffprobe/video metadata arrives.
+            progress.max = '1';
+            progress.value = '0';
+          }
+        }
 
         const canReport = Boolean(state.current) && (!state.noVideo ? (v instanceof HTMLVideoElement && Number.isFinite(v.currentTime)) : state.followRemote);
 
