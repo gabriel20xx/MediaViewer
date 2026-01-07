@@ -2,7 +2,10 @@ import { z } from 'zod';
 
 const EnvSchema = z.object({
   DATABASE_URL: z.string().min(1),
-  MEDIA_ROOT: z.string().min(1),
+  MEDIA_ROOT: z.preprocess(
+    (v) => (typeof v === 'string' && v.trim().length > 0 ? v : '/media'),
+    z.string().min(1)
+  ),
   PORT: z.coerce.number().int().positive().default(3000),
   CORS_ORIGIN: z.string().optional(),
 });

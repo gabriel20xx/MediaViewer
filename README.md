@@ -25,7 +25,7 @@ docker compose up --build
 
 Server:
 - `DATABASE_URL` (required): Postgres connection string
-- `MEDIA_ROOT` (required): path inside container to scan (default in compose: `/media`)
+- `MEDIA_ROOT` (optional): path inside container to scan (defaults to `/media`)
 - `PORT` (optional): default `3000`
 
 Desktop client:
