@@ -50,14 +50,21 @@ function isVrFromRelPath(relPath: string): boolean {
 export async function upsertMediaFromDisk(opts: {
   db: Db;
   mediaRoot: string;
+  onProgress?: (scanned: number, message: string) => void;
 }): Promise<{ scanned: number; upserted: number }>
 {
-  const { db, mediaRoot } = opts;
+  const { db, mediaRoot, onProgress } = opts;
   let scanned = 0;
   let upserted = 0;
 
   for await (const absPath of walk(mediaRoot)) {
     scanned++;
+    
+    // Report progress every 10 files
+    if (onProgress && scanned % 10 === 0) {
+      onProgress(scanned, `Scanning... ${scanned} files processed`);
+    }
+    
     const ext = path.extname(absPath);
     if (!ext) continue;
 

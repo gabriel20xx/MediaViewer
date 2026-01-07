@@ -94,10 +94,10 @@
           <div class="stack">
             <div class="row">
               <select id="axisSelect" style="max-width: 220px;">
-                <option value="L0">L0 (primary)</option>
-                <option value="L1">L1</option>
-                <option value="L2">L2</option>
-                <option value="L3">L3</option>
+                <option value="L0">L0 (Stroke)</option>
+                <option value="L1">L1 (Twist)</option>
+                <option value="L2">L2 (Roll)</option>
+                <option value="L3">L3 (Pitch)</option>
                 <option value="CUSTOM">Custom…</option>
               </select>
               <input id="axisCustom" value="L0" style="max-width: 120px; display:none;" />
@@ -107,11 +107,12 @@
             <div class="small">Sends TCode lines based on the funscript actions while playing.</div>
             
             <div style="border-top: 1px solid #222; padding-top: 8px; margin-top: 4px;">
-              <div class="row">
+              <div class="row" style="justify-content:space-between;">
                 <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
                   <input type="checkbox" id="autoHomeEnabled" />
                   <span class="small">Auto-home on pause/stop</span>
                 </label>
+                <button id="btnToggleAutoHomeSettings" class="small" style="padding:2px 4px; opacity:0.7;">Details</button>
               </div>
               <div id="autoHomeSettings" style="display: none; margin-top: 8px;">
                 <div class="small" style="margin-bottom: 4px;">Home position (%):</div>
@@ -262,6 +263,8 @@
         pageSize: 30,
         total: 0,
         items: [],
+        durationsSec: {},
+        _durToken: 0,
         current: null,
         funscript: null,
         funIndex: -1,
@@ -395,10 +398,10 @@
       function setFsPill() {
         const n = state.funscript?.actions?.length;
         if (typeof n === 'number') {
-          fsPill.textContent = `Funscript: ${n} actions`;
+          fsPill.textContent = 'Funscript: Loaded';
           fsPill.className = 'pill connected';
         } else {
-          fsPill.textContent = 'Funscript: —';
+          fsPill.textContent = 'Funscript: Not available';
           fsPill.className = 'pill disconnected';
         }
       }
@@ -499,25 +502,23 @@
       }
 
       function labelForSource(id) {
-        if (!id) return 'Any';
-        if (id === 'any') return 'Any';
-        
-        // Fallback labels for known patterns (check these first before metadata)
-        if (id.startsWith('vr:deovr')) return 'VR (DeoVR)';
-        if (id.startsWith('vr:heresphere')) return 'VR (HereSphere)';
+        if (!id) return 'Unknown';
         
         // Check if we have metadata for this client
         const meta = state.clientsMetadata.get(id);
         if (meta) {
           const browser = parseBrowserFromUserAgent(meta.userAgent);
-          return `${browser} (${meta.ipAddress})`;
+          // Strip ::ffff: prefix from IP
+          const ip = (meta.ipAddress || '').replace(/^::ffff:/, '');
+          return `${browser} (${ip})`;
         }
         
-        // More fallback labels
+        // Fallbacks
+        if (id.startsWith('vr:deovr')) return 'VR (DeoVR)';
+        if (id.startsWith('vr:heresphere')) return 'VR (HereSphere)';
         if (id.startsWith('desktop-')) return 'Desktop Client';
         if (id.startsWith('web-')) return 'Web Browser';
         
-        // For any other format, show a shortened version
         if (id.length > 20) return id.slice(0, 17) + '...';
         return id;
       }
@@ -525,19 +526,18 @@
       function parseBrowserFromUserAgent(ua) {
         if (!ua || ua === 'Unknown') return 'Unknown Browser';
         
-        // Check for common browsers
+        // Specific VR browsers/agents
+        if (ua.includes('DeoVR')) return 'DeoVR';
+        if (ua.includes('HereSphere')) return 'HereSphere';
+        if (ua.includes('OculusBrowser')) return 'Oculus Browser';
+        if (ua.includes('Wolvic')) return 'Wolvic';
+        
+        // Common desktop
         if (ua.includes('Edg/')) return 'Edge';
         if (ua.includes('Chrome/')) return 'Chrome';
         if (ua.includes('Firefox/')) return 'Firefox';
         if (ua.includes('Safari/') && !ua.includes('Chrome')) return 'Safari';
         if (ua.includes('OPR/') || ua.includes('Opera/')) return 'Opera';
-        
-        // Mobile browsers
-        if (ua.includes('Mobile')) {
-          if (ua.includes('Chrome')) return 'Chrome Mobile';
-          if (ua.includes('Safari')) return 'Safari Mobile';
-          return 'Mobile Browser';
-        }
         
         return 'Browser';
       }
@@ -546,19 +546,24 @@
         const sel = $('followSource');
         if (!(sel instanceof HTMLSelectElement)) return;
 
-        const entries = Array.from(state.seenSources.entries())
-          .sort((a, b) => b[1] - a[1])
-          .map(([id]) => id);
+        // "Any" option removed per user request.
+        // List only active sources.
+        const activeIds = Array.from(state.seenSources.keys());
+        
+        // If followSource is not in active list, we might want to add a "Select a source" option
+        // or just show the active ones.
+        // User said: "If current selected source gets disconnected change follow source to none."
+        
+        let html = '<option value="">(None)</option>';
+        html += activeIds.map((id) => `<option value="${esc(id)}" ${id === state.followSource ? 'selected' : ''}>${esc(labelForSource(id))}</option>`).join('');
+        
+        sel.innerHTML = html;
 
-        const opts = ['any', ...entries];
-        sel.innerHTML = opts
-          .map((id) => `<option value="${esc(id)}" ${id === state.followSource ? 'selected' : ''}>${esc(labelForSource(id))}</option>`)
-          .join('');
-
-        if (!opts.includes(state.followSource)) {
-          state.followSource = 'any';
-          savePrefs();
-          sel.value = 'any';
+        // If currently selected source is no longer valid/active, reset to none.
+        if (state.followSource && state.followSource !== 'any' && !state.seenSources.has(state.followSource)) {
+           state.followSource = '';
+           savePrefs();
+           sel.value = '';
         }
       }
 
@@ -603,6 +608,15 @@
           setStatus('WS connected');
           setWsPill(true);
           ws.send(JSON.stringify({ type: 'sync:hello', clientId: state.clientId, sessionId: state.sessionId }));
+          
+          // Send initial empty sync state to announce presence/reset
+          sendSyncUpdate({ 
+              mediaId: state.current?.id || null, 
+              timeMs: 0, 
+              paused: true, 
+              fps: 30, 
+              frame: 0 
+          }, true);
         });
 
         ws.addEventListener('close', () => {
@@ -619,14 +633,18 @@
 
           // Update clients metadata if provided
           if (msg.clients && Array.isArray(msg.clients)) {
+            state.seenSources.clear();
+            state.clientsMetadata.clear();
             for (const client of msg.clients) {
-              if (client.clientId) {
+              if (client.clientId && client.clientId !== state.clientId) {
+                state.seenSources.set(client.clientId, Date.now());
                 state.clientsMetadata.set(client.clientId, {
                   userAgent: client.userAgent || 'Unknown',
                   ipAddress: client.ipAddress || 'Unknown',
                 });
               }
             }
+            updateFollowSourceOptions();
           }
 
           const src = String(msg.state.fromClientId || '');
@@ -660,17 +678,46 @@
 
       async function applyRemoteSyncState(remote) {
         if (!state.followRemote) return;
-        if (!remote || !remote.mediaId) return;
+        
+        // Handle empty/null remote state (deselect current media)
+        if (!remote || !remote.mediaId) {
+          if (state.current) {
+             state.current = null;
+             state.funscript = null;
+             state.funscriptPointer = -1;
+             state.durationMs = null;
+             state.lastAppliedRemotePaused = null;
+             $('now').textContent = 'Now: (Nothing)';
+             
+             // Reset player
+             const v = $('video');
+             if (v instanceof HTMLVideoElement) {
+               v.pause();
+               v.removeAttribute('src');
+               v.load();
+             }
+             
+             updateFunscriptUi(0);
+             renderList();
+             logToConsole('log', 'Remote cleared media - resetting player');
+          }
+          return;
+        }
+
         if (remote.fromClientId && remote.fromClientId === state.clientId) return;
 
-        if (state.followSource && state.followSource !== 'any') {
+        if (state.followSource) {
+          // Strict checking if a source is selected
           if (String(remote.fromClientId || '') !== state.followSource) {
-            // Log when filtering out a source
-            if (String(remote.fromClientId || '').startsWith('vr:')) {
-              logToConsole('log', `VR sync filtered: followSource=${state.followSource}, got ${remote.fromClientId}`);
-            }
-            return;
+             // ... validation
+             return; 
           }
+        } else {
+           // If followSource is empty ("(None)"), do NOT follow "any".
+           // User wants strict following if I removed "any".
+           // "Remove the option Any... If current selected source gets disconnected change follow source to none."
+           // This implies default behavior is NOT "follow anyone".
+           return;
         }
 
         const id = String(remote.mediaId);
@@ -753,6 +800,22 @@
         renderList();
         renderPager();
         setStatus('Ready');
+        prefetchDurations();
+      }
+
+      function getDurationSec(id) {
+        const v = state.durationsSec[id];
+        return Number.isFinite(v) ? v : null;
+      }
+
+      function formatDuration(seconds) {
+        if (!Number.isFinite(seconds) || seconds <= 0) return '--:--';
+        const total = Math.round(seconds);
+        const h = Math.floor(total / 3600);
+        const m = Math.floor((total % 3600) / 60);
+        const s = total % 60;
+        if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+        return `${m}:${String(s).padStart(2, '0')}`;
       }
 
       function renderPager() {
@@ -764,12 +827,65 @@
 
       function renderList() {
         $('list').innerHTML = state.items.map((it) => {
-          const fs = it.hasFunscript ? `<span class='pill'>funscript</span>` : '';
+          const fs = it.hasFunscript ? `<span class='pill' style='background:#10b981;color:#fff;'>funscript</span>` : '';
+          const vr = it.isVr ? `<span class='pill' style='background:#8b5cf6;color:#fff;'>VR</span>` : '';
           const active = state.current?.id === it.id ? 'active' : '';
-          return `<div class='item ${active}' data-id='${it.id}'>${esc(it.filename)} ${fs}<br/><small>${esc(it.mediaType)}</small></div>`;
+          const dur = formatDuration(getDurationSec(it.id) ?? NaN);
+          const durTag = dur !== '--:--' ? `<span class='pill' style='background:#374151;color:#d1d5db;'>${dur}</span>` : '';
+          return `<div class='item ${active}' data-id='${it.id}'>
+            <div style="display:flex; justify-content:space-between;">
+              <span>${esc(it.filename)}</span>
+              <span>${durTag} ${vr} ${fs}</span>
+            </div>
+            <small style="opacity:0.7;">${esc(it.mediaType)}</small>
+          </div>`;
         }).join('');
-        for (const div of $('list').querySelectorAll('.item')) {
+        const items = $('list').querySelectorAll('.item');
+        for (const div of items) {
           div.addEventListener('click', () => openMedia(div.getAttribute('data-id')));
+        }
+      }
+
+      async function probeDuration(id) {
+        // Desktop version: use hidden video element to probe
+        return new Promise((resolve) => {
+          const v = document.createElement('video');
+          v.preload = 'metadata';
+          v.src = new URL(`/api/media/${id}/stream`, state.serverUrl).toString();
+          v.onloadedmetadata = () => {
+             const d = v.duration;
+             v.removeAttribute('src');
+             resolve(d);
+          };
+          v.onerror = () => resolve(null);
+          // Timeout
+          setTimeout(() => {
+             v.removeAttribute('src');
+             resolve(null); 
+          }, 5000);
+        });
+      }
+
+      async function prefetchDurations() {
+        const token = ++state._durToken;
+        const ids = state.items
+          .filter(it => it.mediaType === 'video')
+          .map(it => it.id)
+          .filter(id => getDurationSec(id) === null);
+          
+        if (!ids.length) return;
+        
+        // Process sequentially to avoid flooding network/process
+        for (const id of ids) {
+          if (token !== state._durToken) return;
+          const d = await probeDuration(id);
+          if (token !== state._durToken) return;
+          if (typeof d === 'number' && Number.isFinite(d) && d > 0) {
+             state.durationsSec[id] = d;
+             // Update UI if item is still visible
+             const el = document.querySelector(`.item[data-id="${id}"]`);
+             if (el) renderList(); 
+          }
         }
       }
 
@@ -1115,9 +1231,13 @@
 
       $('autoHomeEnabled').addEventListener('change', () => {
         state.autoHomeEnabled = $('autoHomeEnabled').checked;
-        $('autoHomeSettings').style.display = state.autoHomeEnabled ? '' : 'none';
         savePrefs();
         if (!state.autoHomeEnabled) cancelAutoHome();
+      });
+
+      $('btnToggleAutoHomeSettings').addEventListener('click', () => {
+        const el = $('autoHomeSettings');
+        el.style.display = el.style.display === 'none' ? '' : 'none';
       });
 
       $('autoHomePosition').addEventListener('input', () => {
@@ -1239,10 +1359,30 @@
         state.noVideo = !state.noVideo;
         savePrefs();
         setVideoModeUi();
-
-        // If turning video back on and we have a current item, reload the stream.
-        if (!state.noVideo && state.current?.id) {
-          openMedia(state.current.id, { suppressSync: true });
+        
+        // When toggling video mode, we try to preserve playback state as much as possible
+        const v = $('video');
+        if (!state.noVideo) {
+          // Turning Video ON
+          if (state.current?.id && v instanceof HTMLVideoElement) {
+             const wasPaused = state.remotePaused ?? true; // fallback to paused
+             const currentTime = state.durationMs ? (state.lastFunscriptValue / 100 * state.durationMs / 1000) : 0; // rough guess if we were in no-video mode, actually better to use last known time
+             
+             // Reload stream but try to seek to where we were
+             // openMedia is too destructive (resets funscript state), so we manually set src
+             v.src = new URL(`/api/media/${state.current.id}/stream`, state.serverUrl).toString();
+             v.currentTime = state.remoteTimeMs ? state.remoteTimeMs / 1000 : 0;
+             if (!wasPaused) {
+                 v.play().catch(()=>{});
+             }
+          }
+        } else {
+           // Turning Video OFF
+           if (v instanceof HTMLVideoElement) {
+             v.pause();
+             v.removeAttribute('src');
+             v.load();
+           }
         }
       });
 
@@ -1291,7 +1431,7 @@
       $('autoHomePosition').value = state.autoHomePosition;
       $('autoHomeDelay').value = state.autoHomeDelay;
       $('autoHomeTransition').value = state.autoHomeTransition;
-      $('autoHomeSettings').style.display = state.autoHomeEnabled ? '' : 'none';
+      $('autoHomeSettings').style.display = 'none'; // always start hidden unless manually toggled
 
       // Auto-connect serial UI initialization
       $('autoConnectSerial').checked = state.autoConnectSerial;

@@ -9,6 +9,9 @@ import { newId } from './ids.js';
 import { getSyncPlaybackState, upsertSyncPlaybackState } from './syncState.js';
 import { probeDurationMsWithFfprobe } from './ffprobe.js';
 
+// Global scan progress tracker
+let scanProgress = { isScanning: false, scanned: 0, total: 0, message: '' };
+
 export function buildApiRouter(opts: {
   db: Db;
   mediaRoot: string;
@@ -21,8 +24,32 @@ export function buildApiRouter(opts: {
   });
 
   router.post('/scan', async (_req, res) => {
-    const result = await upsertMediaFromDisk({ db, mediaRoot });
-    res.json(result);
+    if (scanProgress.isScanning) {
+      return res.status(409).json({ error: 'Scan already in progress' });
+    }
+    
+    scanProgress = { isScanning: true, scanned: 0, total: 0, message: 'Starting scan...' };
+    
+    // Start scan in background
+    upsertMediaFromDisk({ 
+      db, 
+      mediaRoot,
+      onProgress: (scanned, message) => {
+        scanProgress = { isScanning: true, scanned, total: 0, message };
+      }
+    })
+      .then((result) => {
+        scanProgress = { isScanning: false, scanned: result.scanned, total: result.scanned, message: `Complete: ${result.scanned} files scanned, ${result.upserted} updated` };
+      })
+      .catch((err) => {
+        scanProgress = { isScanning: false, scanned: 0, total: 0, message: `Error: ${err.message}` };
+      });
+    
+    res.json({ ok: true, message: 'Scan started' });
+  });
+
+  router.get('/scan/progress', async (_req, res) => {
+    res.json(scanProgress);
   });
 
   router.get('/sync', async (req, res) => {

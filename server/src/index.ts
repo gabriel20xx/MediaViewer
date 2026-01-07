@@ -157,6 +157,9 @@ wss.on('connection', (raw, req) => {
   ws.on('close', () => {
     if (ws.__mvClientId) {
       clientMetadata.delete(ws.__mvClientId);
+      if (ws.__mvSessionId) {
+        broadcastSyncState(ws.__mvSessionId).catch(console.error);
+      }
     }
   });
 
@@ -178,8 +181,8 @@ wss.on('connection', (raw, req) => {
       }
       ws.__mvSessionId = sessionId;
 
-      const state = await getSyncPlaybackState(db, sessionId);
-      ws.send(JSON.stringify({ type: 'sync:state', state }));
+      // Broadcast latest state (including the new client list) to everyone
+      broadcastSyncState(sessionId).catch(console.error);
       return;
     }
 

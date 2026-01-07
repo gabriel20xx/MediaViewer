@@ -482,6 +482,10 @@
 
         el('deovrLib').addEventListener('click', () => window.__openDeoVrLibrary());
         el('hsLib').addEventListener('click', () => window.__openHereSphereLibrary());
+        if (uaHas('deovr') || uaHas('heresphere')) {
+          el('deovrLib').style.display = 'none';
+          el('hsLib').style.display = 'none';
+        }
 
         const maxPage = Math.max(1, Math.ceil(state.total / state.pageSize));
         el('first').disabled = state.page <= 1;
