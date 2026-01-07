@@ -1,12 +1,15 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { app, BrowserWindow, ipcMain } from 'electron';
+import type { BrowserWindow as BrowserWindowType } from 'electron';
+import * as electron from 'electron';
 import { SerialPort } from 'serialport';
 import { SerialTCodeDriver } from './serialDriver.js';
 
+const { app, BrowserWindow, ipcMain } = electron;
+
 const SERVER_URL = process.env.SERVER_URL ?? 'http://localhost:3000';
 
-let mainWindow: BrowserWindow | null = null;
+let mainWindow: BrowserWindowType | null = null;
 const driver = new SerialTCodeDriver();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
