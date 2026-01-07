@@ -32,6 +32,9 @@
       .kpi { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
       .kpi .pill { margin-left: 0; }
       .stack { display: grid; gap: 8px; }
+      .meter { position: relative; height: 14px; border-radius: 999px; background: #1a1c24; border: 1px solid #2a2f3a; overflow: hidden; }
+      .meter-fill { position: absolute; inset: 0; background: linear-gradient(90deg, #5b8cff, #2cd3a7); transform-origin: left center; transform: scaleX(0); transition: transform 0.12s ease-out; }
+      .meter-label { font-size: 11px; opacity: 0.8; margin-top: 4px; text-align: right; }
     </style>
   </head>
   <body>
@@ -139,6 +142,12 @@
 
         <video id="video" controls></video>
         <input id="progress" type="range" min="0" max="1" value="0" step="1" disabled />
+        <div class="small" id="progressTime">--:-- / --:--</div>
+        <div class="small" id="funscriptStatus">Funscript: not loaded</div>
+        <div class="meter" aria-hidden="true">
+          <div class="meter-fill" id="funscriptMeter"></div>
+        </div>
+        <div class="meter-label" id="funscriptLabel">Value: 0% (000)</div>
         <div class="small" id="noVideoHint" style="display:none;">No-video mode: using sync playback time only (no /stream requests).</div>
         <div class="small" id="playback"></div>
       </div>
@@ -155,6 +164,8 @@
         current: null,
         funscript: null,
         funIndex: -1,
+        funscriptPointer: -1,
+        lastFunscriptValue: 0,
         drive: false,
         axis: 'L0',
         clientId: 'desktop-' + Math.random().toString(16).slice(2),
@@ -187,6 +198,10 @@
       const serialPill = $('serialPill');
       const drivePill = $('drivePill');
       const fsPill = $('fsPill');
+      const progressTimeEl = $('progressTime');
+      const funscriptStatusEl = $('funscriptStatus');
+      const funscriptMeterEl = $('funscriptMeter');
+      const funscriptLabelEl = $('funscriptLabel');
 
       async function apiJson(path, opts) {
         const url = new URL(path, state.serverUrl);
@@ -461,8 +476,11 @@
         state.current = it || { id, filename: id, mediaType: 'video', hasFunscript: false };
         state.funscript = null;
         state.funIndex = -1;
+        state.funscriptPointer = -1;
+        state.lastFunscriptValue = 0;
         state.durationMs = null;
         $('now').textContent = it ? `Now: ${it.filename}` : `Now: ${id}`;
+        updateFunscriptUi(0);
 
         const v = $('video');
         if (v instanceof HTMLVideoElement) {
@@ -487,16 +505,86 @@
         try {
           state.funscript = await apiJson(`/api/media/${id}/funscript`);
           state.funscript.actions.sort((a,b) => a.at - b.at);
+          state.funscriptPointer = -1;
+          state.lastFunscriptValue = 0;
         } catch {
           state.funscript = null;
         }
 
         setFsPill();
+        updateFunscriptUi(0);
         renderList();
       }
 
       function currentFrame(timeSeconds, fps) {
         return Math.max(0, Math.floor(timeSeconds * fps));
+      }
+
+      function updateFunscriptUi(timeMs) {
+        if (!funscriptStatusEl || !funscriptMeterEl || !funscriptLabelEl) return;
+
+        const actions = state.funscript?.actions;
+        if (!actions || !Array.isArray(actions) || actions.length === 0) {
+          funscriptStatusEl.textContent = 'Funscript: not loaded';
+          funscriptMeterEl.style.transform = 'scaleX(0)';
+          funscriptLabelEl.textContent = 'Value: 0% (000)';
+          state.funscriptPointer = -1;
+          state.lastFunscriptValue = 0;
+          return;
+        }
+
+        const driveStatus = state.drive ? 'Drive: ON' : 'Drive: OFF';
+        funscriptStatusEl.textContent = `Funscript: loaded (${actions.length} actions) - ${driveStatus}`;
+
+        const ms = Number.isFinite(timeMs) ? Math.max(0, timeMs) : 0;
+        let idx = Number.isInteger(state.funscriptPointer) ? state.funscriptPointer : -1;
+        if (idx >= actions.length) idx = actions.length - 1;
+        if (idx < -1) idx = -1;
+
+        if (idx + 1 < actions.length && actions[idx + 1].at <= ms) {
+          while (idx + 1 < actions.length && actions[idx + 1].at <= ms) idx++;
+        } else if (idx >= 0 && actions[idx].at > ms) {
+          while (idx >= 0 && actions[idx].at > ms) idx--;
+        } else if (idx === -1 && actions[0].at <= ms) {
+          while (idx + 1 < actions.length && actions[idx + 1].at <= ms) idx++;
+        }
+
+        state.funscriptPointer = idx;
+
+        const prev = idx >= 0 ? actions[idx] : null;
+        const next = idx + 1 < actions.length ? actions[idx + 1] : null;
+        let pos;
+        if (!prev && next) pos = next.pos;
+        else if (!next && prev) pos = prev.pos;
+        else if (prev && next) {
+          const span = Math.max(1, next.at - prev.at);
+          const ratio = Math.min(1, Math.max(0, (ms - prev.at) / span));
+          pos = prev.pos + (next.pos - prev.pos) * ratio;
+        } else {
+          pos = 0;
+        }
+
+        if (!Number.isFinite(pos)) pos = 0;
+
+        state.lastFunscriptValue = pos;
+        const pct = Math.max(0, Math.min(100, pos));
+        funscriptMeterEl.style.transform = `scaleX(${pct / 100})`;
+        const tcodeVal = String(Math.round((pct / 100) * 999)).padStart(3, '0');
+        funscriptLabelEl.textContent = `Value: ${Math.round(pct)}% (${tcodeVal})`;
+      }
+
+      function formatTime(ms) {
+        if (!Number.isFinite(ms) || ms < 0) return '--:--';
+        const totalSeconds = Math.floor(ms / 1000);
+        const hours = Math.floor(totalSeconds / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        const mm = String(minutes).padStart(2, '0');
+        const ss = String(seconds).padStart(2, '0');
+        if (hours > 0) {
+          return `${hours}:${mm}:${ss}`;
+        }
+        return `${minutes}:${ss}`;
       }
 
       async function tick() {
@@ -520,6 +608,7 @@
 
         // Update progress bar.
         const progress = $('progress');
+        let displayDurationMs = null;
         if (progress instanceof HTMLInputElement) {
           let durationMs = state.durationMs;
           if (!state.noVideo && v instanceof HTMLVideoElement) {
@@ -527,6 +616,7 @@
             if (Number.isFinite(d) && d > 0) durationMs = Math.round(d * 1000);
           }
           if (durationMs && durationMs > 0) {
+            displayDurationMs = durationMs;
             progress.max = String(durationMs);
             progress.value = String(Math.max(0, Math.min(durationMs, timeMs)));
           } else {
@@ -535,6 +625,12 @@
             progress.value = '0';
           }
         }
+
+        if (progressTimeEl) {
+          progressTimeEl.textContent = `${formatTime(timeMs)} / ${formatTime(displayDurationMs)}`;
+        }
+
+        updateFunscriptUi(timeMs);
 
         const canReport = Boolean(state.current) && (!state.noVideo ? (v instanceof HTMLVideoElement && Number.isFinite(v.currentTime)) : state.followRemote);
 
@@ -657,6 +753,7 @@
         setDrivePill();
         savePrefs();
         state.funIndex = -1;
+        updateFunscriptUi(state.lastFunscriptValue);
       });
 
       $('btnPlayPause').addEventListener('click', async () => {
