@@ -5,8 +5,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$clientDir = Join-Path $root "client-desktop"
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$clientDir = Join-Path $repoRoot "client-desktop"
 
 Write-Host "Starting MediaViewer desktop client..." -ForegroundColor Cyan
 Write-Host "Client dir: $clientDir" -ForegroundColor DarkGray
