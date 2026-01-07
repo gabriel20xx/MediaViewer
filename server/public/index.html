@@ -9,7 +9,7 @@
       const state = {
         q: '',
         page: 1,
-        pageSize: 48,
+        pageSize: 12,
         total: 0,
         items: [],
         funFilter: 'all', // all | with | without
@@ -335,14 +335,14 @@
           ? `<span class="tag mvLen" data-id="${item.id}">${formatDuration(getDurationSec(item.id) ?? NaN)}</span>`
           : '';
 
-        const cachedThumb = getThumbDataUrl(item.id);
-        const thumbStatus = cachedThumb ? '' : `<div class="thumbStatus" data-id="${item.id}">Loading preview…</div>`;
+        // Use server-side generated thumbnail for video.
+        const thumbUrl = item.mediaType === 'image' 
+          ? `/api/media/${item.id}/stream`
+          : `/api/media/${item.id}/thumb`;
 
-        const thumb = item.mediaType === 'image'
-          ? `<img class="thumbMedia mvThumbImg" loading="lazy" src="/api/media/${item.id}/stream" data-id="${item.id}" alt="${escapeHtml(item.filename)}" />`
-          : cachedThumb
-            ? `<img class="thumbMedia" loading="lazy" src="${cachedThumb}" alt="${escapeHtml(item.filename)}" />`
-            : `<video class="thumbMedia mvThumbVideo" muted playsinline preload="metadata" data-id="${item.id}" data-src="/api/media/${item.id}/stream"></video>`;
+        const thumb = `<img class="thumbMedia" loading="lazy" src="${thumbUrl}" alt="${escapeHtml(item.filename)}" />`;
+        // No client-side processing status needed anymore
+        const thumbStatus = '';
 
         return `
           <div class="card" role="button" tabindex="0" data-open-id="${escapeHtml(item.id)}" aria-label="Open: ${escapeHtml(item.filename)}">
@@ -551,12 +551,15 @@
           });
         }
 
-        initVideoThumbs();
-        initImageThumbs();
+        // initVideoThumbs(); // Removed
+        // initImageThumbs(); // Removed
         prefetchDurationsForPage();
       }
 
       async function prefetchDurationsForPage() {
+        // Skip duration prefetch on VR browsers (HereSphere, DeoVR, Quest) to save resources/decoders.
+        if (uaHas('heresphere') || uaHas('deovr') || uaHas('oculus') || uaHas('android')) return;
+
         const token = ++state._durToken;
         const ids = state.items
           .filter((it) => it.mediaType === 'video')
@@ -610,8 +613,9 @@
         });
       }
 
+      // Legacy client-side thumbnail generation (unused now that server handles it, but kept for reference if reverted)
       function initVideoThumbs() {
-        const vids = Array.from(document.querySelectorAll('.mvThumbVideo'));
+        return; // Deprecated: server now provides /thumb endpoint.
         if (!vids.length) return;
 
         const io = new IntersectionObserver((entries) => {
@@ -677,27 +681,9 @@
         vids.forEach((v) => io.observe(v));
       }
 
+      // Legacy client-side thumbnail generation (unused now that server handles it, but kept for reference if reverted)
       function initImageThumbs() {
-        const imgs = Array.from(document.querySelectorAll('.mvThumbImg'));
-        for (const img of imgs) {
-          const status = img.parentElement?.querySelector('.thumbStatus');
-          if (!status) continue;
-
-          // If already loaded from cache.
-          if (img.complete && img.naturalWidth > 0) {
-            status.classList.add('hidden');
-            continue;
-          }
-
-          img.addEventListener('load', () => {
-            status.classList.add('hidden');
-          }, { once: true });
-
-          img.addEventListener('error', () => {
-            status.textContent = 'Preview unavailable';
-            status.classList.remove('hidden');
-          }, { once: true });
-        }
+         return; // Deprecated.
       }
 
       function renderPlayer() {

@@ -9,8 +9,11 @@ import { newId } from './ids.js';
 import { getSyncPlaybackState, upsertSyncPlaybackState } from './syncState.js';
 import { probeDurationMsWithFfprobe } from './ffprobe.js';
 
+import { generateThumbnail } from './thumbnails/generator.js';
+
 // Global scan progress tracker
 let scanProgress = { isScanning: false, scanned: 0, total: 0, message: '' };
+
 
 export function buildApiRouter(opts: {
   db: Db;
@@ -192,6 +195,36 @@ export function buildApiRouter(opts: {
 
     // Use express's built-in static sender by delegating to res.sendFile (supports range).
     return res.sendFile(abs);
+  });
+
+  router.get('/media/:id/thumb', async (req, res) => {
+    const id = req.params.id;
+    const itemRes = await db.pool.query(
+      `SELECT rel_path, media_type FROM media_items WHERE id = $1 LIMIT 1`,
+      [id]
+    );
+    const item = itemRes.rows[0];
+    if (!item) return res.status(404).send('Not found');
+
+    const abs = path.join(mediaRoot, item.rel_path);
+
+    if (item.media_type === 'image') {
+      // For images, just serve the original for now (browsers handle resizing okay, 
+      // or we could use sharp later if needed).
+      return res.sendFile(abs);
+    }
+    
+    // For video, generate a thumbnail
+    try {
+      // 320px width is good for grid
+      const thumbPath = await generateThumbnail(abs, 320);
+      res.setHeader('Content-Type', 'image/jpeg');
+      return res.sendFile(thumbPath);
+    } catch (e) {
+      // Fallback to error or empty
+      console.error('Thumb gen failed:', e);
+      return res.status(500).send('Thumbnail generation failed');
+    }
   });
 
   router.get('/media/:id/funscript', async (req, res) => {
