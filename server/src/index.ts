@@ -16,6 +16,9 @@ const db = createDb(env.DATABASE_URL);
 
 const app = express();
 
+// Many VR apps are used behind reverse proxies (https). Trust proxy headers so req.protocol is correct.
+app.set('trust proxy', true);
+
 if (env.CORS_ORIGIN) {
   app.use(cors({ origin: env.CORS_ORIGIN }));
 }

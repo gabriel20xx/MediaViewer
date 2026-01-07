@@ -332,7 +332,7 @@
           : `<span class="tag tag--bad">no funscript</span>`;
         const tagT = `<span class="tag">${item.mediaType}</span>`;
         const tagVr = item.isVr
-          ? `<span class="tag">vr</span>`
+          ? `<span class="tag tag--vr">vr</span>`
           : '';
 
         const durationTag = item.mediaType === 'video'
@@ -414,6 +414,10 @@
             <button class="btn" id="regenThumbs" title="Clear server thumbnail cache and refresh">Regenerate thumbs</button>
             <button class="btn" id="deovrLib" title="Open library in DeoVR">DeoVR Library</button>
             <button class="btn" id="hsLib" title="Open HereSphere library JSON">HereSphere Library</button>
+            <div class="opStatus" id="opStatus" style="display:none">
+              <progress id="opProgress"></progress>
+              <span class="small" id="opText"></span>
+            </div>
           </header>
           <main>
             <div class="small">${formatPageLabel()}</div>
@@ -479,10 +483,55 @@
           savePrefs();
         });
 
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+        function opShow(text, mode) {
+          const wrap = el('opStatus');
+          const prog = el('opProgress');
+          const t = el('opText');
+          wrap.style.display = 'flex';
+          t.textContent = text || '';
+
+          // mode: 'indeterminate' | { value, max }
+          if (mode && typeof mode === 'object') {
+            prog.max = Number(mode.max) || 1;
+            prog.value = Number(mode.value) || 0;
+          } else {
+            prog.removeAttribute('value');
+          }
+        }
+
+        function opHide() {
+          const wrap = el('opStatus');
+          wrap.style.display = 'none';
+        }
+
+        async function waitForScanCompletion() {
+          // Poll server progress until scan completes.
+          for (;;) {
+            const p = await apiJson('/api/scan/progress');
+            if (p && p.isScanning) {
+              const msg = p.message || 'Scanning...';
+              const scanned = typeof p.scanned === 'number' ? p.scanned : 0;
+              opShow(`${msg} (${scanned} files)`, 'indeterminate');
+              await sleep(500);
+              continue;
+            }
+
+            const doneMsg = (p && p.message) ? p.message : 'Scan complete';
+            opShow(doneMsg, { value: 1, max: 1 });
+            await sleep(800);
+            opHide();
+            return;
+          }
+        }
+
         el('scan').addEventListener('click', async () => {
           el('scan').disabled = true;
           try {
+            opShow('Starting scan...', 'indeterminate');
             await apiJson('/api/scan', { method: 'POST' });
+            await waitForScanCompletion();
             await loadList();
             render();
           } finally {
@@ -494,10 +543,14 @@
           const btn = el('regenThumbs');
           btn.disabled = true;
           try {
+            opShow('Regenerating thumbs...', 'indeterminate');
             await apiJson('/api/cache/clear', { method: 'POST' });
             // Bust browser cache for /api/media/:id/thumb
             state.thumbVer = (state.thumbVer + 1) | 0;
             render();
+            opShow('Thumbnails refreshed', { value: 1, max: 1 });
+            await sleep(800);
+            opHide();
           } finally {
             btn.disabled = false;
           }

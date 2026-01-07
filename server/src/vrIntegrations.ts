@@ -1,4 +1,4 @@
-import type express from 'express';
+import express, { type Express, type Request } from 'express';
 import type { Db } from './db.js';
 import path from 'node:path';
 import { probeDurationMsWithFfprobe } from './ffprobe.js';
@@ -17,10 +17,25 @@ type VrIntegrationContext = {
   mediaRoot: string;
 };
 
-function baseUrl(req: express.Request): string {
+function baseUrl(req: Request): string {
   const host = req.get('host');
   const proto = req.protocol;
   return `${proto}://${host}`;
+}
+
+function parseVideoIdFromHereSphereEventId(idField: unknown): string | null {
+  const raw = typeof idField === 'string' ? idField.trim() : '';
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    const m = u.pathname.match(/\/heresphere\/video\/([^/]+)$/);
+    if (m?.[1]) return decodeURIComponent(m[1]);
+  } catch {
+    // fall through
+  }
+  const m = raw.match(/\/heresphere\/video\/([^/?#]+)/);
+  if (m?.[1]) return decodeURIComponent(m[1]);
+  return null;
 }
 
 function stablePositiveInt(input: string): number {
@@ -99,7 +114,7 @@ async function getVideoById(db: Db, id: string) {
 }
 
 export function registerVrIntegrations(
-  app: express.Express,
+  app: Express,
   db: Db,
   opts?: {
     onVrSync?: VrSyncNotify;
@@ -108,7 +123,7 @@ export function registerVrIntegrations(
 ) {
   const mediaRoot = opts?.ctx?.mediaRoot || process.env.MEDIA_ROOT || '';
 
-  async function safeVideoLengthSecondsById(id: string): Promise<number> {
+  async function safeVideoLengthMsById(id: string): Promise<number> {
     if (!mediaRoot) return 0;
     try {
       const res = await db.pool.query(
@@ -120,10 +135,16 @@ export function registerVrIntegrations(
       const abs = path.join(mediaRoot, String(r.rel_path));
       const durationMs = await probeDurationMsWithFfprobe(abs);
       if (!durationMs || !Number.isFinite(durationMs)) return 0;
-      return Math.max(0, Math.round(durationMs / 1000));
+      return Math.max(0, Math.round(durationMs));
     } catch {
       return 0;
     }
+  }
+
+  async function safeVideoLengthSecondsById(id: string): Promise<number> {
+    const ms = await safeVideoLengthMsById(id);
+    if (!ms) return 0;
+    return Math.max(0, Math.round(ms / 1000));
   }
   // Simple on-the-fly thumbnail image endpoint.
   app.get('/thumb/:id.svg', async (req, res) => {
@@ -154,7 +175,8 @@ export function registerVrIntegrations(
             title: v.filename,
             // DeoVR docs (Selection Scene shortened format): seconds
             videoLength: 0,
-            thumbnailUrl: `${base}/thumb/${encodeURIComponent(v.id)}.svg`,
+            // Prefer the real thumbnail endpoint (jpeg) for app compatibility.
+            thumbnailUrl: `${base}/api/media/${encodeURIComponent(v.id)}/thumb`,
             video_url: `${base}/deovr/video/${encodeURIComponent(v.id)}${sessionQs}`,
           })),
         },
@@ -214,7 +236,7 @@ export function registerVrIntegrations(
       screenType: fov === 180 ? 'dome' : 'sphere',
       stereoMode: stereo === 'sbs' ? 'sbs' : stereo === 'tb' ? 'tb' : 'off',
       // Required when playing from a Selection Scene list.
-      thumbnailUrl: `${base}/thumb/${encodeURIComponent(id)}.svg`,
+      thumbnailUrl: `${base}/api/media/${encodeURIComponent(id)}/thumb`,
     });
   });
 
@@ -241,6 +263,42 @@ export function registerVrIntegrations(
         tags: [],
       })),
     });
+  });
+
+  // HereSphere playback event receiver.
+  // If eventServer is set to `${base}/heresphere/event`, HereSphere will POST playback events here.
+  app.post('/heresphere/event', express.json({ limit: '256kb' }), async (req, res) => {
+    const sessionId = String((req.query as any)?.sessionId ?? 'default').trim() || 'default';
+    const body = (req.body || {}) as any;
+
+    const mediaId = parseVideoIdFromHereSphereEventId(body.id);
+    const timeMs = Number.isFinite(Number(body.time)) ? Math.max(0, Math.round(Number(body.time))) : 0;
+    const evt = Number.isFinite(Number(body.event)) ? Number(body.event) : null;
+
+    const paused = evt === 2 || evt === 0 || evt === 3;
+    const fps = 30;
+    const frame = Math.max(0, Math.floor((timeMs / 1000) * fps));
+
+    const connectionKey = typeof body.connectionKey === 'string' ? body.connectionKey.trim() : '';
+    const fromClientId = connectionKey ? `vr:heresphere:${connectionKey}` : 'vr:heresphere';
+
+    if (mediaId) {
+      try {
+        await opts?.onVrSync?.({
+          sessionId,
+          mediaId,
+          fromClientId,
+          timeMs,
+          paused,
+          fps,
+          frame,
+        });
+      } catch {
+        // ignore
+      }
+    }
+
+    res.status(204).end();
   });
 
   // --- HereSphere integration ---
@@ -272,6 +330,7 @@ export function registerVrIntegrations(
 
     // Signal to sync listeners (desktop) that a VR player selected this media.
     const sessionId = String((req.query as any)?.sessionId ?? 'default').trim() || 'default';
+    const sessionQs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
     try {
       await opts?.onVrSync?.({
         sessionId,
@@ -299,12 +358,19 @@ export function registerVrIntegrations(
         ]
       : [];
 
+    const duration = await safeVideoLengthMsById(id);
+
     res.setHeader('HereSphere-JSON-Version', '1');
     res.json({
       access: 1,
       title: item.filename,
       description: item.relPath,
-      thumbnailImage: `${base}/thumb/${encodeURIComponent(id)}.svg`,
+      thumbnailImage: `${base}/api/media/${encodeURIComponent(id)}/thumb`,
+
+      // Send playback events to our server so we can sync desktop reliably.
+      eventServer: `${base}/heresphere/event${sessionQs}`,
+
+      duration,
 
       projection: 'equirectangular',
       stereo: stereo === 'mono' ? 'mono' : stereo,

@@ -210,6 +210,26 @@
             <input type="number" id="scriptDelayInput" step="10" style="width:150px; padding:5px;">
             <span style="color:#888; font-size:0.9em; margin-left:10px;">Negative = earlier, Positive = later</span>
           </div>
+
+          <div style="margin-top:20px; padding-top:15px; border-top:1px solid #333;">
+            <label style="display:block; color:#fff; margin-bottom:5px;">Interpolation</label>
+            <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+              <select id="interpModeSelect" style="width:220px; padding:5px;">
+                <option value="spline">Spline (cubic Hermite)</option>
+                <option value="pchip">PCHIP (shape-preserving cubic)</option>
+                <option value="makima">MAKIMA (modified Akima)</option>
+                <option value="linear">Linear</option>
+                <option value="step">Step (hold)</option>
+              </select>
+              <span style="color:#888; font-size:0.9em;">Applies to the meter and the TCode drive output</span>
+            </div>
+
+            <div style="margin-top:12px;">
+              <div style="color:#bbb; font-size:0.9em; margin-bottom:6px;">Example comparison</div>
+              <canvas id="interpGraph" width="640" height="220" style="width:100%; height:220px; border:1px solid #333; border-radius:8px; background:#0f1117;"></canvas>
+              <div id="interpLegend" style="margin-top:6px; color:#aaa; font-size:0.85em; display:flex; gap:12px; flex-wrap:wrap;"></div>
+            </div>
+          </div>
         </div>
 
         <div style="margin-bottom:30px;">
@@ -270,9 +290,13 @@
         sourceStates: new Map(),
         current: null,
         funscript: null,
+        funscriptDerivatives: null,
+        interpolationMode: 'spline',
         funIndex: -1,
         funscriptPointer: -1,
         lastFunscriptValue: 0,
+        lastTcodeSentAt: 0,
+        lastTcodeSentPos: null,
         drive: false,
         axis: 'L0',
         autoHomeEnabled: false,
@@ -425,6 +449,7 @@
             if (typeof p.autoHomeTransition === 'number') state.autoHomeTransition = p.autoHomeTransition;
             if (typeof p.invertScript === 'boolean') state.invertScript = p.invertScript;
             if (typeof p.scriptDelay === 'number') state.scriptDelay = p.scriptDelay;
+            if (typeof p.interpolationMode === 'string') state.interpolationMode = p.interpolationMode;
             if (typeof p.autoConnectSerial === 'boolean') state.autoConnectSerial = p.autoConnectSerial;
             if (typeof p.lastSerialPort === 'string') state.lastSerialPort = p.lastSerialPort;
             if (typeof p.lastSerialBaud === 'number') state.lastSerialBaud = p.lastSerialBaud;
@@ -454,6 +479,7 @@
           autoHomeTransition: state.autoHomeTransition,
           invertScript: state.invertScript,
           scriptDelay: state.scriptDelay,
+          interpolationMode: state.interpolationMode,
           axisLimits: state.axisLimits,
           autoConnectSerial: state.autoConnectSerial,
           lastSerialPort: state.lastSerialPort,
@@ -908,6 +934,7 @@
         // Keep a placeholder so progress/UI can still update.
         state.current = it || { id, filename: id, mediaType: 'video', hasFunscript: false };
         state.funscript = null;
+        state.funscriptDerivatives = null;
         state.funIndex = -1;
         state.funscriptPointer = -1;
         state.lastFunscriptValue = 0;
@@ -942,8 +969,16 @@
           state.funscript.actions.sort((a,b) => a.at - b.at);
           state.funscriptPointer = -1;
           state.lastFunscriptValue = 0;
+
+          // Precompute derivatives for interpolation methods that need them.
+          try {
+            state.funscriptDerivatives = computeFunscriptDerivatives(state.funscript.actions);
+          } catch {
+            state.funscriptDerivatives = null;
+          }
         } catch {
           state.funscript = null;
+          state.funscriptDerivatives = null;
         }
 
         setFsPill();
@@ -953,6 +988,327 @@
 
       function currentFrame(timeSeconds, fps) {
         return Math.max(0, Math.floor(timeSeconds * fps));
+      }
+
+      function clamp(n, min, max) {
+        return Math.max(min, Math.min(max, n));
+      }
+
+      function computeFunscriptDerivatives(actions) {
+        const n = actions.length;
+        if (!Array.isArray(actions) || n < 2) return { pchip: null, makima: null };
+
+        const t = actions.map(a => Number(a.at) || 0);
+        const y = actions.map(a => Number(a.pos) || 0);
+
+        // Ensure strictly increasing time (fallback to linear if not).
+        for (let i = 1; i < n; i++) {
+          if (!(t[i] > t[i - 1])) {
+            return { pchip: null, makima: null };
+          }
+        }
+
+        return {
+          pchip: computePchipDerivatives(t, y),
+          makima: computeMakimaDerivatives(t, y),
+        };
+      }
+
+      function computePchipDerivatives(x, y) {
+        const n = x.length;
+        if (n < 2) return null;
+        if (n === 2) {
+          const d = (y[1] - y[0]) / (x[1] - x[0]);
+          return [d, d];
+        }
+
+        const h = new Array(n - 1);
+        const delta = new Array(n - 1);
+        for (let i = 0; i < n - 1; i++) {
+          h[i] = x[i + 1] - x[i];
+          delta[i] = (y[i + 1] - y[i]) / h[i];
+        }
+
+        const m = new Array(n).fill(0);
+
+        // Endpoints (Fritsch-Carlson)
+        {
+          const h0 = h[0], h1 = h[1];
+          const d0 = delta[0], d1 = delta[1];
+          let m0 = ((2 * h0 + h1) * d0 - h0 * d1) / (h0 + h1);
+          if (Math.sign(m0) !== Math.sign(d0)) m0 = 0;
+          else if (Math.sign(d0) !== Math.sign(d1) && Math.abs(m0) > 3 * Math.abs(d0)) m0 = 3 * d0;
+          m[0] = m0;
+        }
+        {
+          const hn1 = h[n - 2], hn2 = h[n - 3];
+          const dn1 = delta[n - 2], dn2 = delta[n - 3];
+          let mn = ((2 * hn1 + hn2) * dn1 - hn1 * dn2) / (hn1 + hn2);
+          if (Math.sign(mn) !== Math.sign(dn1)) mn = 0;
+          else if (Math.sign(dn1) !== Math.sign(dn2) && Math.abs(mn) > 3 * Math.abs(dn1)) mn = 3 * dn1;
+          m[n - 1] = mn;
+        }
+
+        // Interior
+        for (let k = 1; k < n - 1; k++) {
+          const dk1 = delta[k - 1];
+          const dk = delta[k];
+          if (dk1 === 0 || dk === 0 || Math.sign(dk1) !== Math.sign(dk)) {
+            m[k] = 0;
+          } else {
+            const w1 = 2 * h[k] + h[k - 1];
+            const w2 = h[k] + 2 * h[k - 1];
+            m[k] = (w1 + w2) / (w1 / dk1 + w2 / dk);
+          }
+        }
+
+        return m;
+      }
+
+      function computeMakimaDerivatives(x, y) {
+        const n = x.length;
+        if (n < 2) return null;
+        if (n === 2) {
+          const d = (y[1] - y[0]) / (x[1] - x[0]);
+          return [d, d];
+        }
+
+        const delta = new Array(n - 1);
+        for (let i = 0; i < n - 1; i++) {
+          const h = x[i + 1] - x[i];
+          delta[i] = (y[i + 1] - y[i]) / h;
+        }
+
+        const m = new Array(n).fill(0);
+        // Simple edge handling (close to common makima behavior)
+        m[0] = delta[0];
+        m[1] = (delta[0] + delta[1]) / 2;
+        m[n - 2] = (delta[n - 3] + delta[n - 2]) / 2;
+        m[n - 1] = delta[n - 2];
+
+        for (let i = 2; i <= n - 3; i++) {
+          const d_im2 = delta[i - 2];
+          const d_im1 = delta[i - 1];
+          const d_i = delta[i];
+          const d_ip1 = delta[i + 1];
+
+          // Modified Akima weights (MAKIMA)
+          const w1 = Math.abs(d_ip1 - d_i) + 0.5 * Math.abs(d_ip1 + d_i);
+          const w2 = Math.abs(d_im1 - d_im2) + 0.5 * Math.abs(d_im1 + d_im2);
+          const denom = w1 + w2;
+          if (denom === 0) {
+            m[i] = (d_im1 + d_i) / 2;
+          } else {
+            m[i] = (w1 * d_im1 + w2 * d_i) / denom;
+          }
+        }
+
+        return m;
+      }
+
+      function findActionIndexAtOrBeforeMs(actions, ms, idxHint) {
+        let idx = Number.isInteger(idxHint) ? idxHint : -1;
+        if (idx >= actions.length) idx = actions.length - 1;
+        if (idx < -1) idx = -1;
+
+        if (idx + 1 < actions.length && actions[idx + 1].at <= ms) {
+          while (idx + 1 < actions.length && actions[idx + 1].at <= ms) idx++;
+        } else if (idx >= 0 && actions[idx].at > ms) {
+          while (idx >= 0 && actions[idx].at > ms) idx--;
+        } else if (idx === -1 && actions[0].at <= ms) {
+          while (idx + 1 < actions.length && actions[idx + 1].at <= ms) idx++;
+        }
+
+        return idx;
+      }
+
+      function interpolatePos(actions, ms, idxHint, mode, derivatives) {
+        // Returns { pos, idx } where idx is the action index at-or-before ms.
+        const idx = findActionIndexAtOrBeforeMs(actions, ms, idxHint);
+
+        const p1 = idx >= 0 ? actions[idx] : null;
+        const p2 = idx + 1 < actions.length ? actions[idx + 1] : null;
+        if (!p1 && p2) return { pos: Number(p2.pos) || 0, idx };
+        if (!p2 && p1) return { pos: Number(p1.pos) || 0, idx };
+        if (!p1 || !p2) return { pos: 0, idx };
+
+        const t1 = Number(p1.at) || 0;
+        const t2 = Number(p2.at) || (t1 + 1);
+        const span = Math.max(1, t2 - t1);
+        const u = clamp((ms - t1) / span, 0, 1);
+
+        const y1 = Number(p1.pos) || 0;
+        const y2 = Number(p2.pos) || 0;
+
+        const interpMode = String(mode || 'spline').toLowerCase();
+        if (interpMode === 'step') {
+          return { pos: y1, idx };
+        }
+
+        if (interpMode === 'linear') {
+          const y = y1 + (y2 - y1) * u;
+          return { pos: Number.isFinite(y) ? y : y1, idx };
+        }
+
+        // Cubic Hermite with various slope sources
+        let d1 = 0;
+        let d2 = 0;
+
+        if (interpMode === 'pchip' && derivatives?.pchip && derivatives.pchip.length === actions.length) {
+          d1 = Number(derivatives.pchip[idx]) || 0;
+          d2 = Number(derivatives.pchip[idx + 1]) || 0;
+        } else if (interpMode === 'makima' && derivatives?.makima && derivatives.makima.length === actions.length) {
+          d1 = Number(derivatives.makima[idx]) || 0;
+          d2 = Number(derivatives.makima[idx + 1]) || 0;
+        } else {
+          // Default spline: estimate slopes from neighbors (time-aware)
+          const p0 = idx - 1 >= 0 ? actions[idx - 1] : p1;
+          const p3 = idx + 2 < actions.length ? actions[idx + 2] : p2;
+          const t0 = Number(p0.at) || t1;
+          const t3 = Number(p3.at) || t2;
+          const y0 = Number(p0.pos) || 0;
+          const y3 = Number(p3.pos) || 0;
+          d1 = (t2 - t0) !== 0 ? (y2 - y0) / (t2 - t0) : 0;
+          d2 = (t3 - t1) !== 0 ? (y3 - y1) / (t3 - t1) : 0;
+        }
+
+        const m1 = d1 * span;
+        const m2 = d2 * span;
+
+        const u2 = u * u;
+        const u3 = u2 * u;
+        const h00 = 2 * u3 - 3 * u2 + 1;
+        const h10 = u3 - 2 * u2 + u;
+        const h01 = -2 * u3 + 3 * u2;
+        const h11 = u3 - u2;
+
+        let y = h00 * y1 + h10 * m1 + h01 * y2 + h11 * m2;
+
+        // Prevent overshoot between adjacent points (safer for motion control).
+        const lo = Math.min(y1, y2);
+        const hi = Math.max(y1, y2);
+        y = clamp(y, lo, hi);
+
+        if (!Number.isFinite(y)) y = y1;
+        return { pos: y, idx };
+      }
+
+      function getExampleActions() {
+        // Fixed example to highlight differences between interpolators.
+        return [
+          { at: 0, pos: 10 },
+          { at: 500, pos: 95 },
+          { at: 1000, pos: 15 },
+          { at: 1500, pos: 85 },
+          { at: 2000, pos: 30 },
+        ];
+      }
+
+      function drawInterpolationExample() {
+        const canvas = $('interpGraph');
+        const legend = $('interpLegend');
+        if (!(canvas instanceof HTMLCanvasElement) || !legend) return;
+
+        const actions = getExampleActions();
+        const deriv = computeFunscriptDerivatives(actions);
+
+        const dpr = Math.max(1, Math.round(window.devicePixelRatio || 1));
+        const cssW = canvas.clientWidth || 640;
+        const cssH = canvas.clientHeight || 220;
+        canvas.width = Math.round(cssW * dpr);
+        canvas.height = Math.round(cssH * dpr);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        const padL = 40, padR = 12, padT = 10, padB = 26;
+        const w = cssW, h = cssH;
+        const plotW = w - padL - padR;
+        const plotH = h - padT - padB;
+
+        const xMin = actions[0].at;
+        const xMax = actions[actions.length - 1].at;
+        const yMin = 0;
+        const yMax = 100;
+
+        const xToPx = (x) => padL + ((x - xMin) / (xMax - xMin)) * plotW;
+        const yToPx = (y) => padT + (1 - (y - yMin) / (yMax - yMin)) * plotH;
+
+        // Background
+        ctx.clearRect(0, 0, w, h);
+        ctx.fillStyle = '#0f1117';
+        ctx.fillRect(0, 0, w, h);
+
+        // Grid
+        ctx.strokeStyle = '#24272f';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 6]);
+        for (let i = 0; i <= 4; i++) {
+          const yy = padT + (plotH * i) / 4;
+          ctx.beginPath();
+          ctx.moveTo(padL, yy);
+          ctx.lineTo(w - padR, yy);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+        // Axes
+        ctx.strokeStyle = '#3a3f4c';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(padL, padT);
+        ctx.lineTo(padL, h - padB);
+        ctx.lineTo(w - padR, h - padB);
+        ctx.stroke();
+
+        // Labels
+        ctx.fillStyle = '#b7bcc7';
+        ctx.font = '11px system-ui, Segoe UI, Arial';
+        ctx.fillText('100', 6, yToPx(100) + 4);
+        ctx.fillText('0', 16, yToPx(0) + 4);
+        ctx.fillText(`${xMin}ms`, padL, h - 8);
+        ctx.fillText(`${xMax}ms`, w - padR - 50, h - 8);
+
+        const methods = [
+          { key: 'spline', label: 'Spline', color: '#5b8cff', dash: [] },
+          { key: 'pchip', label: 'PCHIP', color: '#2cd3a7', dash: [6, 6] },
+          { key: 'makima', label: 'MAKIMA', color: '#fbbf24', dash: [2, 6] },
+          { key: 'linear', label: 'Linear', color: '#a78bfa', dash: [10, 4] },
+          { key: 'step', label: 'Step', color: '#f87171', dash: [] },
+        ];
+
+        legend.innerHTML = methods.map(m => {
+          return `<span style="display:flex; align-items:center; gap:6px;"><span style="width:18px; height:2px; background:${m.color}; display:inline-block;"></span>${m.label}</span>`;
+        }).join('');
+
+        const sampleCount = 240;
+        for (const method of methods) {
+          ctx.strokeStyle = method.color;
+          ctx.lineWidth = method.key === String(state.interpolationMode || '').toLowerCase() ? 2.5 : 1.5;
+          ctx.setLineDash(method.dash);
+
+          let pointer = -1;
+          ctx.beginPath();
+          for (let i = 0; i <= sampleCount; i++) {
+            const x = xMin + ((xMax - xMin) * i) / sampleCount;
+            const r = interpolatePos(actions, x, pointer, method.key, deriv);
+            pointer = r.idx;
+            const px = xToPx(x);
+            const py = yToPx(clamp(r.pos, 0, 100));
+            if (i === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        // Control points
+        ctx.fillStyle = '#e6e6e6';
+        for (const a of actions) {
+          ctx.beginPath();
+          ctx.arc(xToPx(a.at), yToPx(a.pos), 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
 
       function updateFunscriptUi(timeMs) {
@@ -973,33 +1329,9 @@
         funscriptStatusEl.textContent = `Funscript: loaded (${actions.length} actions) - ${driveStatus}`;
 
         const ms = Number.isFinite(timeMs) ? Math.max(0, timeMs) : 0;
-        let idx = Number.isInteger(state.funscriptPointer) ? state.funscriptPointer : -1;
-        if (idx >= actions.length) idx = actions.length - 1;
-        if (idx < -1) idx = -1;
-
-        if (idx + 1 < actions.length && actions[idx + 1].at <= ms) {
-          while (idx + 1 < actions.length && actions[idx + 1].at <= ms) idx++;
-        } else if (idx >= 0 && actions[idx].at > ms) {
-          while (idx >= 0 && actions[idx].at > ms) idx--;
-        } else if (idx === -1 && actions[0].at <= ms) {
-          while (idx + 1 < actions.length && actions[idx + 1].at <= ms) idx++;
-        }
-
-        state.funscriptPointer = idx;
-
-        const prev = idx >= 0 ? actions[idx] : null;
-        const next = idx + 1 < actions.length ? actions[idx + 1] : null;
-        let pos;
-        if (!prev && next) pos = next.pos;
-        else if (!next && prev) pos = prev.pos;
-        else if (prev && next) {
-          const span = Math.max(1, next.at - prev.at);
-          const ratio = Math.min(1, Math.max(0, (ms - prev.at) / span));
-          pos = prev.pos + (next.pos - prev.pos) * ratio;
-        } else {
-          pos = 0;
-        }
-
+        const itp = interpolatePos(actions, ms, state.funscriptPointer, state.interpolationMode, state.funscriptDerivatives);
+        state.funscriptPointer = itp.idx;
+        let pos = itp.pos;
         if (!Number.isFinite(pos)) pos = 0;
 
         state.lastFunscriptValue = pos;
@@ -1104,30 +1436,42 @@
             }
           }
 
-          // Drive serial from funscript.
-          if (state.drive && state.funscript?.actions?.length) {
+          // Drive serial from funscript (spline-interpolated).
+          if (state.drive && !paused && state.funscript?.actions?.length) {
             const actions = state.funscript.actions;
-            // Apply script delay by adjusting the time we're looking up
             const adjustedTimeMs = timeMs - state.scriptDelay;
-            while (state.funIndex + 1 < actions.length && actions[state.funIndex + 1].at <= adjustedTimeMs) {
-              state.funIndex++;
-              const act = actions[state.funIndex];
-              const axis = String(state.axis || 'L0').toUpperCase();
-              
-              // Get raw position from funscript
-              let pos = Math.max(0, Math.min(100, Math.round(act.pos)));
-              
-              // Apply inversion if enabled
-              if (state.invertScript) {
-                pos = 100 - pos;
-              }
-              
-              // Apply axis-specific min/max limits
-              const limits = state.axisLimits[axis] || { min: 0, max: 100 };
-              const range = limits.max - limits.min;
-              pos = limits.min + (pos / 100) * range;
-              pos = Math.max(0, Math.min(100, Math.round(pos)));
-              
+            const itp = interpolatePos(actions, adjustedTimeMs, state.funIndex, state.interpolationMode, state.funscriptDerivatives);
+            state.funIndex = itp.idx;
+
+            const axis = String(state.axis || 'L0').toUpperCase();
+            let pos = itp.pos;
+            if (!Number.isFinite(pos)) pos = 0;
+            pos = clamp(pos, 0, 100);
+
+            // Apply inversion if enabled
+            if (state.invertScript) {
+              pos = 100 - pos;
+            }
+
+            // Apply axis-specific min/max limits
+            const limits = state.axisLimits[axis] || { min: 0, max: 100 };
+            const range = (limits.max - limits.min);
+            pos = limits.min + (pos / 100) * range;
+            pos = clamp(pos, 0, 100);
+
+            // Throttle updates to avoid serial spam, but keep motion smooth.
+            const now = Date.now();
+            const lastAt = Number(state.lastTcodeSentAt) || 0;
+            const lastPos = (typeof state.lastTcodeSentPos === 'number' && Number.isFinite(state.lastTcodeSentPos))
+              ? state.lastTcodeSentPos
+              : null;
+
+            const shouldSendByTime = (now - lastAt) >= 33; // ~30 Hz
+            const shouldSendByDelta = lastPos === null ? true : Math.abs(pos - lastPos) >= 0.5;
+            if (shouldSendByTime && shouldSendByDelta) {
+              state.lastTcodeSentAt = now;
+              state.lastTcodeSentPos = pos;
+
               const scaled = Math.round((pos / 100) * 999);
               const vvv = String(scaled).padStart(3, '0');
               const line = `${axis}${vvv}`;
@@ -1280,6 +1624,8 @@
         // Update UI from state
         $('invertScriptCheck').checked = state.invertScript;
         $('scriptDelayInput').value = state.scriptDelay;
+        const interpSel = $('interpModeSelect');
+        if (interpSel) interpSel.value = state.interpolationMode || 'spline';
         
         // Update axis sliders
         ['L0', 'L1', 'L2', 'L3'].forEach(axis => {
@@ -1290,6 +1636,7 @@
         });
         
         $('settingsModal').style.display = '';
+        drawInterpolationExample();
       });
 
       $('btnCloseSettings').addEventListener('click', () => {
@@ -1299,6 +1646,7 @@
       $('btnResetSettings').addEventListener('click', () => {
         state.invertScript = false;
         state.scriptDelay = 0;
+        state.interpolationMode = 'spline';
         state.axisLimits = {
           L0: { min: 0, max: 100 },
           L1: { min: 0, max: 100 },
@@ -1310,12 +1658,16 @@
         // Update UI
         $('invertScriptCheck').checked = false;
         $('scriptDelayInput').value = 0;
+        const interpSel = $('interpModeSelect');
+        if (interpSel) interpSel.value = 'spline';
         ['L0', 'L1', 'L2', 'L3'].forEach(axis => {
           $(`${axis}MinSlider`).value = 0;
           $(`${axis}MaxSlider`).value = 100;
           $(`${axis}MinLabel`).textContent = 0;
           $(`${axis}MaxLabel`).textContent = 100;
         });
+
+        drawInterpolationExample();
       });
 
       $('invertScriptCheck').addEventListener('change', () => {
@@ -1327,6 +1679,15 @@
         state.scriptDelay = Number($('scriptDelayInput').value) || 0;
         savePrefs();
       });
+
+      const interpModeSelect = $('interpModeSelect');
+      if (interpModeSelect) {
+        interpModeSelect.addEventListener('change', () => {
+          state.interpolationMode = String(interpModeSelect.value || 'spline');
+          savePrefs();
+          drawInterpolationExample();
+        });
+      }
 
       // Axis sliders
       ['L0', 'L1', 'L2', 'L3'].forEach(axis => {
