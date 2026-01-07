@@ -112,7 +112,7 @@
                   <input type="checkbox" id="autoHomeEnabled" />
                   <span class="small">Auto-home on pause/stop</span>
                 </label>
-                <button id="btnToggleAutoHomeSettings" class="small" style="padding:2px 4px; opacity:0.7;">Details</button>
+                <button id="btnToggleAutoHomeSettings" style="max-width: 140px;">Show</button>
               </div>
               <div id="autoHomeSettings" style="display: none; margin-top: 8px;">
                 <div class="small" style="margin-bottom: 4px;">Home position (%):</div>
@@ -1255,7 +1255,9 @@
 
       $('btnToggleAutoHomeSettings').addEventListener('click', () => {
         const el = $('autoHomeSettings');
-        el.style.display = el.style.display === 'none' ? '' : 'none';
+        const isHidden = el.style.display === 'none';
+        el.style.display = isHidden ? '' : 'none';
+        $('btnToggleAutoHomeSettings').textContent = isHidden ? 'Hide' : 'Show';
       });
 
       $('autoHomePosition').addEventListener('input', () => {
@@ -1476,6 +1478,7 @@
       $('autoHomeDelay').value = state.autoHomeDelay;
       $('autoHomeTransition').value = state.autoHomeTransition;
       $('autoHomeSettings').style.display = 'none'; // always start hidden unless manually toggled
+      $('btnToggleAutoHomeSettings').textContent = 'Show';
 
       // Auto-connect serial UI initialization
       $('autoConnectSerial').checked = state.autoConnectSerial;
@@ -1530,6 +1533,9 @@
           const timeMs = Math.round((v.currentTime || 0) * 1000);
           const frame = currentFrame(v.currentTime || 0, fps);
           logToConsole('log', `Manual video ${v.paused ? 'pause' : 'play'} - syncing to remote`);
+          // Auto-home should also respond to manual pauses triggered via native video controls.
+          if (v.paused) triggerAutoHome();
+          else cancelAutoHome();
           // Manual user interactions always sync (force=true), regardless of follow-remote state
           sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame }, true);
         };
