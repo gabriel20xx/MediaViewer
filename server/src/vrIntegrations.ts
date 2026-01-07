@@ -76,6 +76,16 @@ function svgThumb(title: string, footer: string) {
 </svg>`;
 }
 
+function svgThumbError(message: string) {
+  const safeMsg = message.replace(/[&<>\"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+  <rect x="0" y="0" width="640" height="360" fill="#111827"/>
+  <rect x="24" y="24" width="592" height="312" rx="16" fill="#0b1220" stroke="#1f2937"/>
+  <text x="320" y="190" fill="#e5e7eb" font-size="18" text-anchor="middle" font-family="system-ui,Segoe UI,Roboto,Helvetica,Arial">${safeMsg}</text>
+</svg>`;
+}
+
 async function listVrVideos(db: Db, limit: number) {
   const res = await db.pool.query(
     `
@@ -155,6 +165,10 @@ export function registerVrIntegrations(
     const footer = err ? 'Not able to load preview' : 'No thumbnail';
     res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
     res.setHeader('Cache-Control', 'public, max-age=3600');
+    if (err) {
+      res.send(svgThumbError("Thumbnail couldn't be loaded"));
+      return;
+    }
     res.send(svgThumb(title, footer));
   });
 

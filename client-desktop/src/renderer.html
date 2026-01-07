@@ -22,7 +22,7 @@
       .item { border: 1px solid #222; border-radius: 10px; padding: 10px; cursor: pointer; background: #0f1117; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
       .item.active { outline: 2px solid #2a2f3a; }
       .item small { opacity: 0.8; }
-      video { width: 100%; max-height: 70vh; background: #000; }
+      video { width: 100%; aspect-ratio: 16 / 9; height: auto; max-height: 70vh; background: #000; object-fit: contain; }
       input[type="range"] { width: 100%; max-width: 100%; padding: 0; border: 0; background: transparent; }
       .small { font-size: 12px; opacity: 0.85; }
       .pill { display: inline-block; padding: 2px 8px; border: 1px solid #2a2f3a; border-radius: 999px; font-size: 11px; margin-left: 6px; }
@@ -68,7 +68,6 @@
                 <button id="applyServer" style="max-width: 120px;">Apply</button>
               </div>
             </div>
-            <div class="row"><div class="small" id="status"></div></div>
           </div>
         </div>
 
@@ -90,6 +89,7 @@
                 <span class="small">Auto-connect on startup</span>
               </label>
             </div>
+            <div class="row"><div class="small" id="status"></div></div>
           </div>
         </div>
 
@@ -182,7 +182,7 @@
         </div>
 
         <div class="column" style="margin-top: 10px;">
-          <div class="small" style="white-space: nowrap; margin-bottom: 4px;">Follow source</div>
+          <div class="small" style="white-space: nowrap; margin-bottom: 4px;">Sync WebUI</div>
           <select id="followSource" style="width: 100%;"></select>
         </div>
 
@@ -339,6 +339,9 @@
         remotePaused: true,
         remoteFps: 30,
         remoteLastUpdateAt: 0,
+        remoteProjectedTimeMs: 0,
+        remoteProjectedAtMs: 0,
+        serverClockOffsetMs: null,
         lastAppliedRemotePaused: null,
         serialConnected: false,
         isApplyingRemoteState: false,
@@ -398,6 +401,20 @@
         const res = await fetch(url.toString(), opts);
         if (!res.ok) throw new Error(await res.text());
         return res.json();
+      }
+
+      async function allowSelfSignedForServer(url) {
+        try {
+          if (!url) return;
+          if (!window.mv || typeof window.mv.allowInsecureCertForUrl !== 'function') return;
+          const res = await window.mv.allowInsecureCertForUrl(url);
+          if (res && typeof res === 'object' && res.error) {
+            logToConsole('warn', `Certificate allow failed for ${url}: ${res.error}`);
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logToConsole('warn', `Unable to allow certificate for ${url}: ${msg}`);
+        }
       }
 
       async function ensureDurationMs(mediaId) {
@@ -537,10 +554,10 @@
 
       function getNoVideoTimeMsAndPaused() {
         const paused = Boolean(state.remotePaused);
-        const base = Number(state.remoteTimeMs) || 0;
+        const base = Number(state.remoteProjectedTimeMs) || Number(state.remoteTimeMs) || 0;
         if (paused) return { timeMs: base, paused: true };
-        const last = Number(state.remoteLastUpdateAt) || Date.now();
-        return { timeMs: base + Math.max(0, Date.now() - last), paused: false };
+        const anchor = Number(state.remoteProjectedAtMs) || Number(state.remoteLastUpdateAt) || Date.now();
+        return { timeMs: base + Math.max(0, Date.now() - anchor), paused: false };
       }
 
       async function serialDriveTick() {
@@ -728,7 +745,7 @@
            sel.value = '';
            // Source disconnected: Unload the video.
            applyRemoteSyncState({ mediaId: null });
-           logToConsole('log', 'Follow source disconnected - unloading media');
+           logToConsole('log', 'Sync WebUI source disconnected - unloading media');
         }
       }
 
@@ -898,14 +915,44 @@
         const now = Date.now();
         const isThrottled = now < state.applyingRemoteUntil;
         
-        state.remoteTimeMs = Math.max(0, Math.round(Number(remote.timeMs) || 0));
+        const prevRemoteTimeMs = Number(state.remoteTimeMs) || 0;
+
+        const nextRemoteTimeMs = Math.max(0, Math.round(Number(remote.timeMs) || 0));
+        state.remoteTimeMs = nextRemoteTimeMs;
+
         // Be strict about paused parsing (handles booleans, 0/1, and 'true'/'false').
         const pausedRaw = remote.paused;
         const paused = pausedRaw === true || pausedRaw === 1 || pausedRaw === '1' || pausedRaw === 'true';
         const pausedChanged = state.remotePaused !== paused;
         state.remotePaused = paused;
         state.remoteFps = Math.max(1, Math.round(Number(remote.fps) || 30));
-        state.remoteLastUpdateAt = Date.now();
+
+        const nowMs = Date.now();
+        let updatedAtMs = null;
+        if (remote.updatedAt) {
+          const parsed = Date.parse(String(remote.updatedAt));
+          if (!Number.isNaN(parsed)) updatedAtMs = parsed;
+        }
+
+        if (updatedAtMs !== null) {
+          const observedOffset = nowMs - updatedAtMs;
+          if (typeof state.serverClockOffsetMs !== 'number' || !Number.isFinite(state.serverClockOffsetMs)) {
+            state.serverClockOffsetMs = observedOffset;
+          } else {
+            state.serverClockOffsetMs = state.serverClockOffsetMs * 0.9 + observedOffset * 0.1;
+          }
+        }
+
+        const clockOffset = typeof state.serverClockOffsetMs === 'number' && Number.isFinite(state.serverClockOffsetMs)
+          ? state.serverClockOffsetMs
+          : 0;
+        const baselineRemoteNow = updatedAtMs !== null ? updatedAtMs + clockOffset : nowMs;
+        const driftMs = paused ? 0 : Math.max(0, nowMs - baselineRemoteNow);
+        const projectedTimeMs = Math.max(0, nextRemoteTimeMs + driftMs);
+
+        state.remoteProjectedTimeMs = projectedTimeMs;
+        state.remoteProjectedAtMs = nowMs;
+        state.remoteLastUpdateAt = nowMs;
 
         if (pausedChanged) {
           logToConsole('log', `Remote pause state changed: ${paused ? 'PAUSED' : 'PLAYING'}`);
@@ -919,19 +966,29 @@
 
         state.isApplyingRemoteState = true;
         try {
-          // Apply time seek only if not throttled
+          const targetTimeSeconds = projectedTimeMs / 1000;
+          const currentTimeSeconds = Number.isFinite(v.currentTime) ? v.currentTime : 0;
+          const seekDiff = Math.abs(currentTimeSeconds - targetTimeSeconds);
+          const remoteJumpedBack = nextRemoteTimeMs < prevRemoteTimeMs - 100;
+          const remoteJumpedForward = nextRemoteTimeMs - prevRemoteTimeMs > 2000;
+          const remoteJumped = remoteJumpedBack || remoteJumpedForward;
+
+          const shouldRetarget = remoteJumped || seekDiff > 0.75;
+
           if (!isThrottled) {
-            const targetTime = Math.max(0, state.remoteTimeMs / 1000);
-            if (Number.isFinite(v.currentTime) && Math.abs(v.currentTime - targetTime) > 0.5) {
-              try { v.currentTime = targetTime; } catch {}
+            if (shouldRetarget) {
+              try { v.currentTime = targetTimeSeconds; } catch {}
             }
-            state.applyingRemoteUntil = Date.now() + 1500;
+            state.applyingRemoteUntil = nowMs + 1500;
+          } else if (remoteJumped) {
+            try { v.currentTime = targetTimeSeconds; } catch {}
+            state.applyingRemoteUntil = nowMs + 1500;
           }
 
           // Always apply pause state changes immediately (not throttled)
           if (state.lastAppliedRemotePaused !== state.remotePaused) {
             state.lastAppliedRemotePaused = state.remotePaused;
-            state.applyingRemoteUntil = Date.now() + 1500; // Prevent immediate sync back
+            state.applyingRemoteUntil = nowMs + 1500; // Prevent immediate sync back
             if (state.remotePaused) {
               logToConsole('log', 'Pausing video (remote)');
               try { v.pause(); } catch {}
@@ -1605,10 +1662,13 @@
           timeMs = Math.round((v.currentTime || 0) * 1000);
           paused = Boolean(v.paused);
         } else if (state.noVideo && state.followRemote) {
-          const base = state.remoteTimeMs || 0;
+          const base = state.remoteProjectedTimeMs || state.remoteTimeMs || 0;
           paused = Boolean(state.remotePaused);
           if (paused) timeMs = base;
-          else timeMs = base + Math.max(0, Date.now() - (state.remoteLastUpdateAt || Date.now()));
+          else {
+            const anchor = state.remoteProjectedAtMs || state.remoteLastUpdateAt || Date.now();
+            timeMs = base + Math.max(0, Date.now() - anchor);
+          }
         }
 
         const frame = currentFrame(timeMs / 1000, fps);
@@ -1703,9 +1763,13 @@
         }
       }
 
-      $('serverUrl').addEventListener('change', (e) => { state.serverUrl = e.target.value; });
+      $('serverUrl').addEventListener('change', (e) => {
+        state.serverUrl = e.target.value;
+        void allowSelfSignedForServer(state.serverUrl);
+      });
       $('applyServer').addEventListener('click', async () => {
         state.serverUrl = $('serverUrl').value.trim() || state.serverUrl;
+        await allowSelfSignedForServer(state.serverUrl);
         savePrefs();
         try { if (state.ws) state.ws.close(); } catch {}
         connectWs();
@@ -2002,25 +2066,26 @@
         // If changed to None, unload immediately.
         if (!val) {
           applyRemoteSyncState({ mediaId: null }); // Passing null mediaId triggers unload
-          logToConsole('log', 'Follow source set to None - unloading media');
+          logToConsole('log', 'Sync WebUI set to None - unloading media');
           return;
         }
 
         // If changed to a specific source, check if we have cached state.
         const cached = state.sourceStates.get(val);
         if (cached) {
-          logToConsole('log', `Follow source changed to ${val} - applying cached state`);
+          logToConsole('log', `Sync WebUI changed to ${val} - applying cached state`);
           // Force apply even if it looks old, because we just switched to it.
           // But applyRemoteSyncState checks if remote.fromClientId matches state.followSource,
           // which we just updated.
           applyRemoteSyncState(cached);
         } else {
-             logToConsole('log', `Follow source changed to ${val} - waiting for next update`);
+             logToConsole('log', `Sync WebUI changed to ${val} - waiting for next update`);
         }
       });
 
       loadPrefs();
       $('serverUrl').value = state.serverUrl;
+      await allowSelfSignedForServer(state.serverUrl);
 
       try {
         if (window.mv && typeof window.mv.setKeepAwake === 'function') {
@@ -2130,7 +2195,10 @@
               if (state.followRemote) return;
 
               state.remoteTimeMs = Math.max(0, Math.round(seekMs));
-              state.remoteLastUpdateAt = Date.now();
+              const nowSeek = Date.now();
+              state.remoteProjectedTimeMs = state.remoteTimeMs;
+              state.remoteProjectedAtMs = nowSeek;
+              state.remoteLastUpdateAt = nowSeek;
               state.remotePaused = true;
 
               const fps = 30;

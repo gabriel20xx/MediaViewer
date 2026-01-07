@@ -30,6 +30,9 @@
         _lastSentAt: 0,
         lastRemoteSync: null,
         lastRemoteAt: 0,
+        remoteProjectedTimeMs: 0,
+        remoteProjectedAtMs: 0,
+        remoteServerClockOffsetMs: null,
         thumbVer: 0,
       };
 
@@ -183,6 +186,7 @@
         if (!remote) return;
         if (remote.fromClientId && remote.fromClientId === state.clientId) return;
 
+        const prevRemote = state.lastRemoteSync;
         state.lastRemoteSync = remote;
         state.lastRemoteAt = Date.now();
         updateSyncStatus();
@@ -212,14 +216,47 @@
         const v = document.getElementById('v') || document.getElementById('vvr');
         if (!(v instanceof HTMLVideoElement)) return;
 
-        state._applyingRemoteUntil = Date.now() + 800;
+        const now = Date.now();
+        state._applyingRemoteUntil = now + 800;
 
-        const targetTime = Math.max(0, (Number(remote.timeMs) || 0) / 1000);
-        if (Number.isFinite(v.currentTime) && Math.abs(v.currentTime - targetTime) > 0.5) {
+        const prevTimeMs = prevRemote ? Math.max(0, Number(prevRemote.timeMs) || 0) : 0;
+
+        const remoteTimeMs = Math.max(0, Math.round(Number(remote.timeMs) || 0));
+        let updatedAtMs = null;
+        if (remote.updatedAt) {
+          const parsed = Date.parse(String(remote.updatedAt));
+          if (!Number.isNaN(parsed)) updatedAtMs = parsed;
+        }
+
+        if (updatedAtMs !== null) {
+          const observedOffset = now - updatedAtMs;
+          if (typeof state.remoteServerClockOffsetMs !== 'number' || !Number.isFinite(state.remoteServerClockOffsetMs)) {
+            state.remoteServerClockOffsetMs = observedOffset;
+          } else {
+            state.remoteServerClockOffsetMs = state.remoteServerClockOffsetMs * 0.9 + observedOffset * 0.1;
+          }
+        }
+
+        const clockOffset = typeof state.remoteServerClockOffsetMs === 'number' && Number.isFinite(state.remoteServerClockOffsetMs)
+          ? state.remoteServerClockOffsetMs
+          : 0;
+        const baselineRemoteNow = updatedAtMs !== null ? updatedAtMs + clockOffset : now;
+        const paused = Boolean(remote.paused);
+        const driftMs = paused ? 0 : Math.max(0, now - baselineRemoteNow);
+        const projectedTimeMs = remoteTimeMs + driftMs;
+
+        state.remoteProjectedTimeMs = projectedTimeMs;
+        state.remoteProjectedAtMs = now;
+
+        const targetTime = projectedTimeMs / 1000;
+        const currentTime = Number.isFinite(v.currentTime) ? v.currentTime : NaN;
+        const remoteJumpedBack = remoteTimeMs < prevTimeMs - 100;
+        const remoteJumpedForward = remoteTimeMs - prevTimeMs > 2000;
+        const remoteJumped = remoteJumpedBack || remoteJumpedForward;
+        if (!Number.isFinite(currentTime) || remoteJumped || Math.abs(currentTime - targetTime) > 0.75) {
           try { v.currentTime = targetTime; } catch {}
         }
 
-        const paused = Boolean(remote.paused);
         if (paused) {
           try { v.pause(); } catch {}
         } else {
@@ -727,7 +764,7 @@
             status.classList.add('hidden');
           };
           const onError = () => {
-            status.textContent = "Couldn't load";
+            status.textContent = "Thumbnail couldn't be loaded";
             status.classList.remove('hidden');
           };
 

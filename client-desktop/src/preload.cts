@@ -9,6 +9,8 @@ try {
     serialConnect: (opts: { path: string; baudRate: number }) => ipcRenderer.invoke('serial:connect', opts),
     serialDisconnect: () => ipcRenderer.invoke('serial:disconnect'),
     tcodeSend: (line: string) => ipcRenderer.invoke('serial:send', line),
+    setKeepAwake: (enabled: boolean) => ipcRenderer.invoke('power:setKeepAwake', Boolean(enabled)),
+    allowInsecureCertForUrl: (url: string) => ipcRenderer.invoke('network:allow-insecure-cert', url),
   });
   console.log('[Preload] Successfully exposed window.mv API');
 } catch (err) {
