@@ -37,7 +37,8 @@ ENV NODE_ENV=production
 
 # Keep only prod deps in runtime
 COPY package.json package-lock.json* ./
-COPY --from=deps /app/node_modules ./node_modules
+# Copy node_modules *after* `prisma generate` ran (it writes to node_modules/.prisma)
+COPY --from=build /app/node_modules ./node_modules
 RUN npm prune --omit=dev
 
 COPY --from=build /app/prisma ./prisma
