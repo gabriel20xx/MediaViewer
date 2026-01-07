@@ -1,6 +1,16 @@
 import type express from 'express';
 import type { Db } from './db.js';
 
+export type VrSyncNotify = (info: {
+  sessionId: string;
+  mediaId: string;
+  fromClientId: string;
+  timeMs: number;
+  paused: boolean;
+  fps: number;
+  frame: number;
+}) => Promise<void>;
+
 function baseUrl(req: express.Request): string {
   const host = req.get('host');
   const proto = req.protocol;
@@ -81,7 +91,13 @@ async function getVideoById(db: Db, id: string) {
   };
 }
 
-export function registerVrIntegrations(app: express.Express, db: Db) {
+export function registerVrIntegrations(
+  app: express.Express,
+  db: Db,
+  opts?: {
+    onVrSync?: VrSyncNotify;
+  }
+) {
   // Simple on-the-fly thumbnail image endpoint.
   app.get('/thumb/:id.svg', async (req, res) => {
     const id = String(req.params.id ?? '').trim();
@@ -120,6 +136,23 @@ export function registerVrIntegrations(app: express.Express, db: Db) {
     const id = String(req.params.id ?? '').trim();
     const item = await getVideoById(db, id);
     if (!item) return res.status(404).json({ error: 'Not found' });
+
+    // Signal to sync listeners (desktop) that a VR player selected this media.
+    // DeoVR doesn't send websocket sync updates, so this is a server-side hint.
+    const sessionId = String(req.query.sessionId ?? 'default').trim() || 'default';
+    try {
+      await opts?.onVrSync?.({
+        sessionId,
+        mediaId: id,
+        fromClientId: 'vr:deovr',
+        timeMs: 0,
+        paused: false,
+        fps: 30,
+        frame: 0,
+      });
+    } catch {
+      // ignore
+    }
 
     const stereo = (item.vrStereo === 'sbs' || item.vrStereo === 'tb' || item.vrStereo === 'mono')
       ? (item.vrStereo as any)
@@ -171,6 +204,22 @@ export function registerVrIntegrations(app: express.Express, db: Db) {
     const id = String(req.params.id ?? '').trim();
     const item = await getVideoById(db, id);
     if (!item) return res.status(404).json({ access: 0, error: 'Not found' });
+
+    // Signal to sync listeners (desktop) that a VR player selected this media.
+    const sessionId = String((req.query as any)?.sessionId ?? 'default').trim() || 'default';
+    try {
+      await opts?.onVrSync?.({
+        sessionId,
+        mediaId: id,
+        fromClientId: 'vr:heresphere',
+        timeMs: 0,
+        paused: false,
+        fps: 30,
+        frame: 0,
+      });
+    } catch {
+      // ignore
+    }
 
     const stereo = (item.vrStereo === 'sbs' || item.vrStereo === 'tb' || item.vrStereo === 'mono')
       ? (item.vrStereo as any)

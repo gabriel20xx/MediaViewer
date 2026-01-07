@@ -18,7 +18,7 @@
       button { padding: 10px 12px; border-radius: 8px; border: 1px solid #2a2f3a; background: #11131a; color: #e6e6e6; cursor: pointer; }
       button:disabled { opacity: 0.6; cursor: not-allowed; }
       .list { margin-top: 12px; display: grid; gap: 8px; }
-      .item { border: 1px solid #222; border-radius: 10px; padding: 10px; cursor: pointer; background: #0f1117; }
+      .item { border: 1px solid #222; border-radius: 10px; padding: 10px; cursor: pointer; background: #0f1117; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
       .item.active { outline: 2px solid #2a2f3a; }
       .item small { opacity: 0.8; }
       video { width: 100%; max-height: 70vh; background: #000; }
@@ -167,6 +167,7 @@
         remotePaused: true,
         remoteFps: 30,
         remoteLastUpdateAt: 0,
+        lastAppliedRemotePaused: null,
         serialConnected: false,
 
         followSource: 'any',
@@ -357,7 +358,10 @@
 
         state.applyingRemoteUntil = Date.now() + 800;
         state.remoteTimeMs = Math.max(0, Math.round(Number(remote.timeMs) || 0));
-        state.remotePaused = Boolean(remote.paused);
+        // Be strict about paused parsing (handles booleans, 0/1, and 'true'/'false').
+        const pausedRaw = remote.paused;
+        const paused = pausedRaw === true || pausedRaw === 1 || pausedRaw === '1' || pausedRaw === 'true';
+        state.remotePaused = paused;
         state.remoteFps = Math.max(1, Math.round(Number(remote.fps) || 30));
         state.remoteLastUpdateAt = Date.now();
 
@@ -372,10 +376,14 @@
           try { v.currentTime = targetTime; } catch {}
         }
 
-        if (state.remotePaused) {
-          try { v.pause(); } catch {}
-        } else {
-          try { await v.play(); } catch {}
+        // Avoid rapid play/pause toggling: only apply when the desired paused state changes.
+        if (state.lastAppliedRemotePaused !== state.remotePaused) {
+          state.lastAppliedRemotePaused = state.remotePaused;
+          if (state.remotePaused) {
+            try { v.pause(); } catch {}
+          } else {
+            try { await v.play(); } catch {}
+          }
         }
       }
 
@@ -420,7 +428,9 @@
       async function openMedia(id, opts = {}) {
         const suppressSync = Boolean(opts.suppressSync);
         const it = state.items.find((x) => x.id === id);
-        state.current = it;
+        // When following remote, the media might not be in the currently loaded page.
+        // Keep a placeholder so progress/UI can still update.
+        state.current = it || { id, filename: id, mediaType: 'video', hasFunscript: false };
         state.funscript = null;
         state.funIndex = -1;
         $('now').textContent = it ? `Now: ${it.filename}` : `Now: ${id}`;

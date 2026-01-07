@@ -22,9 +22,6 @@ if (env.CORS_ORIGIN) {
 
 app.use('/api', buildApiRouter({ db, mediaRoot: env.MEDIA_ROOT }));
 
-// VR player integrations (root endpoints expected by apps)
-registerVrIntegrations(app, db);
-
 // Serve Web UI (static files built into /public)
 const publicDir = path.join(process.cwd(), 'public');
 app.use(express.static(publicDir));
@@ -53,6 +50,45 @@ function safeJsonParse(s: string): any | null {
   }
 }
 
+function redactDatabaseUrl(databaseUrl: string): string {
+  try {
+    const u = new URL(databaseUrl);
+    if (u.password) u.password = '***';
+    return u.toString();
+  } catch {
+    // Fallback: basic redaction for non-URL formats.
+    return databaseUrl.replace(/:\/\/(.*?):(.*?)@/g, '://$1:***@');
+  }
+}
+
+function logStartupInfo() {
+  const serverUrl = `http://localhost:${env.PORT}`;
+  const ffprobePath = (process.env.FFPROBE_PATH || 'ffprobe').trim() || 'ffprobe';
+
+  // eslint-disable-next-line no-console
+  console.log('[MediaViewer] Starting...');
+  // eslint-disable-next-line no-console
+  console.log(`[MediaViewer] Node ${process.version} | ${process.platform} ${process.arch} | pid ${process.pid}`);
+  // eslint-disable-next-line no-console
+  console.log(`[MediaViewer] HTTP: ${serverUrl}/  (port ${env.PORT})`);
+  // eslint-disable-next-line no-console
+  console.log(`[MediaViewer] WebSocket: ${serverUrl}/ws`);
+  // eslint-disable-next-line no-console
+  console.log(`[MediaViewer] Media root: ${env.MEDIA_ROOT}`);
+  // eslint-disable-next-line no-console
+  console.log(`[MediaViewer] Public dir: ${publicDir}`);
+  // eslint-disable-next-line no-console
+  console.log(`[MediaViewer] DB: ${redactDatabaseUrl(env.DATABASE_URL)}`);
+  // eslint-disable-next-line no-console
+  console.log(`[MediaViewer] ffprobe: ${ffprobePath}`);
+  // eslint-disable-next-line no-console
+  console.log(`[MediaViewer] VR endpoints: ${serverUrl}/deovr  |  ${serverUrl}/heresphere`);
+  if (env.CORS_ORIGIN) {
+    // eslint-disable-next-line no-console
+    console.log(`[MediaViewer] CORS origin: ${env.CORS_ORIGIN}`);
+  }
+}
+
 async function broadcastSyncState(sessionId: string) {
   const state = await getSyncPlaybackState(db, sessionId);
   const msg = JSON.stringify({ type: 'sync:state', state });
@@ -62,6 +98,36 @@ async function broadcastSyncState(sessionId: string) {
     if (client.readyState === 1) client.send(msg);
   }
 }
+
+async function publishExternalSyncUpdate(update: {
+  sessionId: string;
+  mediaId: string;
+  fromClientId: string;
+  timeMs: number;
+  paused: boolean;
+  fps: number;
+  frame: number;
+}) {
+  await upsertSyncPlaybackState(db, {
+    sessionId: update.sessionId,
+    mediaId: update.mediaId,
+    timeMs: update.timeMs,
+    paused: update.paused,
+    fps: update.fps,
+    frame: update.frame,
+    fromClientId: update.fromClientId,
+  });
+
+  // eslint-disable-next-line no-console
+  console.log(`[MediaViewer] External sync: session=${update.sessionId} media=${update.mediaId} from=${update.fromClientId} paused=${update.paused} t=${update.timeMs}ms`);
+
+  await broadcastSyncState(update.sessionId);
+}
+
+// VR player integrations (root endpoints expected by apps)
+registerVrIntegrations(app, db, {
+  onVrSync: async (info) => publishExternalSyncUpdate(info),
+});
 
 wss.on('connection', (raw) => {
   const ws = raw as unknown as WsClient;
@@ -111,10 +177,16 @@ wss.on('connection', (raw) => {
 });
 
 async function main() {
+  logStartupInfo();
+
   await ensureSchema(db);
 
   // Initial scan on boot.
-  await upsertMediaFromDisk({ db, mediaRoot: env.MEDIA_ROOT });
+  const scanStart = Date.now();
+  const scan = await upsertMediaFromDisk({ db, mediaRoot: env.MEDIA_ROOT });
+  const scanMs = Date.now() - scanStart;
+  // eslint-disable-next-line no-console
+  console.log(`[MediaViewer] Initial scan complete: scanned=${scan.scanned}, upserted=${scan.upserted} (${scanMs}ms)`);
 
   server.listen(env.PORT, () => {
     // eslint-disable-next-line no-console
