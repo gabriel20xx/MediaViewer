@@ -16,9 +16,9 @@ services:
     environment:
       DATABASE_URL: postgresql://mediaviewer:mediaviewer@db:5432/mediaviewer
       MEDIA_ROOT: /media
-      PORT: 8080
+      PORT: 3000
     ports:
-      - "8080:8080"
+      - "3000:3000"
     depends_on:
       - db
     volumes:

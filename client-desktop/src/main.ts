@@ -4,7 +4,7 @@ import { app, BrowserWindow, ipcMain } from 'electron';
 import { SerialPort } from 'serialport';
 import { SerialTCodeDriver } from './serialDriver.js';
 
-const SERVER_URL = process.env.SERVER_URL ?? 'http://localhost:8080';
+const SERVER_URL = process.env.SERVER_URL ?? 'http://localhost:3000';
 
 let mainWindow: BrowserWindow | null = null;
 const driver = new SerialTCodeDriver();

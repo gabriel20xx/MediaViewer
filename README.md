@@ -19,17 +19,17 @@ docker compose up --build
 ```
 
 3) Open:
-- Web UI: http://localhost:8080
+- Web UI: http://localhost:3000
 
 ## Environment
 
 Server:
 - `DATABASE_URL` (required): Postgres connection string
 - `MEDIA_ROOT` (required): path inside container to scan (default in compose: `/media`)
-- `PORT` (optional): default `8080`
+- `PORT` (optional): default `3000`
 
 Desktop client:
-- `SERVER_URL` (optional): default `http://localhost:8080`
+- `SERVER_URL` (optional): default `http://localhost:3000`
 
 ## Notes
 
