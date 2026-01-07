@@ -1,5 +1,7 @@
 import type express from 'express';
 import type { Db } from './db.js';
+import path from 'node:path';
+import { probeDurationMsWithFfprobe } from './ffprobe.js';
 
 export type VrSyncNotify = (info: {
   sessionId: string;
@@ -10,6 +12,10 @@ export type VrSyncNotify = (info: {
   fps: number;
   frame: number;
 }) => Promise<void>;
+
+type VrIntegrationContext = {
+  mediaRoot: string;
+};
 
 function baseUrl(req: express.Request): string {
   const host = req.get('host');
@@ -96,8 +102,28 @@ export function registerVrIntegrations(
   db: Db,
   opts?: {
     onVrSync?: VrSyncNotify;
+    ctx?: VrIntegrationContext;
   }
 ) {
+  const mediaRoot = opts?.ctx?.mediaRoot || process.env.MEDIA_ROOT || '';
+
+  async function safeVideoLengthSecondsById(id: string): Promise<number> {
+    if (!mediaRoot) return 0;
+    try {
+      const res = await db.pool.query(
+        `SELECT rel_path FROM media_items WHERE id=$1 AND media_type='video' LIMIT 1`,
+        [id]
+      );
+      const r = res.rows[0];
+      if (!r?.rel_path) return 0;
+      const abs = path.join(mediaRoot, String(r.rel_path));
+      const durationMs = await probeDurationMsWithFfprobe(abs);
+      if (!durationMs || !Number.isFinite(durationMs)) return 0;
+      return Math.max(0, Math.round(durationMs / 1000));
+    } catch {
+      return 0;
+    }
+  }
   // Simple on-the-fly thumbnail image endpoint.
   app.get('/thumb/:id.svg', async (req, res) => {
     const id = String(req.params.id ?? '').trim();
@@ -111,27 +137,11 @@ export function registerVrIntegrations(
   // --- DeoVR integration ---
   // DeoVR will request /deovr for a “Selection Scene” style listing.
   app.all(['/deovr', '/deovr/'], async (req, res) => {
-    // If accessed by a regular browser, show a helper page instead of raw JSON.
-    // We check if the client explicitly prefers JSON (DeoVR) or VR agents.
-    const ua = (req.get('User-Agent') || '').toLowerCase();
-    const accept = (req.get('Accept') || '').toLowerCase();
-    
-    const isVrAgent = ua.includes('deovr') || ua.includes('oculus') || ua.includes('quest') || ua.includes('pico') || ua.includes('vive') || ua.includes('unity') || ua.includes('vr');
-    const wantsJson = accept.includes('application/json') || accept.includes('text/json');
-    const wantsHtml = accept.includes('text/html');
-
-    // If it's a standard browser requesting HTML (and not explicitly identifying as VR), show the help page.
-    if (!isVrAgent && !wantsJson && wantsHtml) {
-      return res.send(`<html><body style="background:#111;color:#fff;font-family:sans-serif;padding:2em;">
-        <h3>DeoVR Integration</h3>
-        <p>This endpoint is intended for the <b>DeoVR</b> VR browser.</p>
-        <p>It provides a JSON feed of VR videos.</p>
-        <p><a href="/" style="color:#4af">Return to Web UI</a></p>
-      </body></html>`);
-    }
-
     const base = baseUrl(req);
     const vids = await listVrVideos(db, 1000);
+
+    const sessionId = String((req.query as any)?.sessionId ?? '').trim();
+    const sessionQs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
 
     res.json({
       scenes: [
@@ -139,9 +149,10 @@ export function registerVrIntegrations(
           name: 'Library',
           list: vids.map((v) => ({
             title: v.filename,
+            // DeoVR docs (Selection Scene shortened format): seconds
             videoLength: 0,
-            thumbnailUrl: `${base}/thumb/${v.id}.svg`,
-            video_url: `${base}/deovr/video/${encodeURIComponent(v.id)}`,
+            thumbnailUrl: `${base}/thumb/${encodeURIComponent(v.id)}.svg`,
+            video_url: `${base}/deovr/video/${encodeURIComponent(v.id)}${sessionQs}`,
           })),
         },
       ],
@@ -150,7 +161,7 @@ export function registerVrIntegrations(
   });
 
   // Per-video deeplink JSON for DeoVR (deovr://https://host/deovr/video/:id)
-  app.get('/deovr/video/:id', async (req, res) => {
+  app.all('/deovr/video/:id', async (req, res) => {
     const base = baseUrl(req);
     const id = String(req.params.id ?? '').trim();
     const item = await getVideoById(db, id);
@@ -178,6 +189,9 @@ export function registerVrIntegrations(
       : inferStereo(item.filename);
     const fov = item.vrFov === 180 || item.vrFov === 360 ? (item.vrFov as 180 | 360) : inferVrFov(item.filename);
 
+    // DeoVR expects videoLength in seconds (required for some features; safe to return 0 if unknown).
+    const videoLength = await safeVideoLengthSecondsById(id);
+
     res.json({
       encodings: [
         {
@@ -192,11 +206,37 @@ export function registerVrIntegrations(
       ],
       title: item.filename,
       id: stablePositiveInt(id),
+      videoLength,
       is3d: true,
       screenType: fov === 180 ? 'dome' : 'sphere',
       stereoMode: stereo === 'sbs' ? 'sbs' : stereo === 'tb' ? 'tb' : 'off',
+      // Required when playing from a Selection Scene list.
       thumbnailUrl: `${base}/thumb/${encodeURIComponent(id)}.svg`,
-      videoPreview: `${base}/api/media/${encodeURIComponent(id)}/stream`,
+    });
+  });
+
+  // Optional auth endpoint (HereSphere spec). We don't require auth, so always grant access.
+  app.all('/heresphere/auth', async (_req, res) => {
+    res.setHeader('HereSphere-JSON-Version', '1');
+    res.json({
+      'auth-token': 'local',
+      access: 1,
+    });
+  });
+
+  // Optional scan endpoint to reduce /heresphere/video GET storms.
+  app.all('/heresphere/scan', async (req, res) => {
+    const base = baseUrl(req);
+    const vids = await listVrVideos(db, 1000);
+
+    res.setHeader('HereSphere-JSON-Version', '1');
+    res.json({
+      scanData: vids.map((v) => ({
+        link: `${base}/heresphere/video/${encodeURIComponent(v.id)}`,
+        title: v.filename,
+        duration: 0,
+        tags: [],
+      })),
     });
   });
 
@@ -206,13 +246,16 @@ export function registerVrIntegrations(
     const base = baseUrl(req);
     const vids = await listVrVideos(db, 1000);
 
+    const sessionId = String((req.query as any)?.sessionId ?? '').trim();
+    const sessionQs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
+
     res.setHeader('HereSphere-JSON-Version', '1');
     res.json({
       access: 1,
       library: [
         {
           name: 'Library',
-          list: vids.map((v) => `${base}/heresphere/video/${encodeURIComponent(v.id)}`),
+          list: vids.map((v) => `${base}/heresphere/video/${encodeURIComponent(v.id)}${sessionQs}`),
         },
       ],
     });

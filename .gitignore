@@ -28,3 +28,6 @@ media/
 
 # Docker local state (if created)
 **/docker-data/
+
+# Local offline snapshots (not committed)
+server/docs/DeoVR_App_Documentation_Full.txt

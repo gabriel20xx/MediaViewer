@@ -138,6 +138,7 @@ async function publishExternalSyncUpdate(update: {
 // VR player integrations (root endpoints expected by apps)
 registerVrIntegrations(app, db, {
   onVrSync: async (info) => publishExternalSyncUpdate(info),
+  ctx: { mediaRoot: env.MEDIA_ROOT },
 });
 
 wss.on('connection', (raw, req) => {

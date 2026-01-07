@@ -408,6 +408,7 @@
             <button class="btn" id="gridDec" title="Smaller grid">-</button>
             <button class="btn" id="gridInc" title="Larger grid">+</button>
             <button class="btn" id="scan">Rescan</button>
+            <button class="btn" id="regenThumbs" title="Clear server thumbnail cache and refresh">Regenerate thumbs</button>
             <button class="btn" id="deovrLib" title="Open library in DeoVR">DeoVR Library</button>
             <button class="btn" id="hsLib" title="Open HereSphere library JSON">HereSphere Library</button>
           </header>
@@ -486,11 +487,32 @@
           }
         });
 
+        el('regenThumbs').addEventListener('click', async () => {
+          const btn = el('regenThumbs');
+          btn.disabled = true;
+          try {
+            await apiJson('/api/cache/clear', { method: 'POST' });
+            // Bust browser cache for /api/media/:id/thumb
+            state.thumbVer = (state.thumbVer + 1) | 0;
+            render();
+          } finally {
+            btn.disabled = false;
+          }
+        });
+
         el('deovrLib').addEventListener('click', () => window.__openDeoVrLibrary());
         el('hsLib').addEventListener('click', () => window.__openHereSphereLibrary());
-        if (uaHas('deovr') || uaHas('heresphere')) {
+        if (uaHas('deovr')) {
+          // In DeoVR's in-app browser, a deovr:// deep link isn't useful.
           el('deovrLib').style.display = 'none';
           el('hsLib').style.display = 'none';
+          el('regenThumbs').style.display = 'none';
+        }
+        if (uaHas('heresphere')) {
+          // Keep the HereSphere library link visible so users can open it and use
+          // HereSphere's Web Stream / Web API importer.
+          el('deovrLib').style.display = 'none';
+          el('regenThumbs').style.display = 'none';
         }
 
         const maxPage = Math.max(1, Math.ceil(state.total / state.pageSize));
@@ -809,9 +831,10 @@
           return;
         }
 
-        // If we're inside HereSphere's built-in browser, navigating to the per-video JSON is the most compatible.
+        // In HereSphere, the intended flow is to open a HereSphere per-video JSON endpoint.
+        // Include sessionId so the server can broadcast VR sync selection.
         if (uaHas('heresphere')) {
-          window.location.href = `/heresphere/video/${encodeURIComponent(id)}`;
+          window.location.href = `/heresphere/video/${encodeURIComponent(id)}?sessionId=${encodeURIComponent(state.wsSessionId || 'default')}`;
           return;
         }
 
@@ -834,12 +857,22 @@
         window.location.href = `deovr://${url}`;
       };
       window.__openHereSphereLibrary = () => {
-        const url = new URL('/heresphere', window.location.origin).toString();
-        window.open(url, '_blank', 'noopener');
+        const url = new URL(`/heresphere?sessionId=${encodeURIComponent(state.wsSessionId || 'default')}`, window.location.origin).toString();
+        if (uaHas('heresphere')) {
+          window.location.href = url;
+        } else {
+          window.open(url, '_blank', 'noopener');
+        }
       };
       window.__openHereSphereVideo = (id) => {
-        const url = new URL(`/heresphere/video/${id}`, window.location.origin).toString();
-        window.open(url, '_blank', 'noopener');
+        const safeId = encodeURIComponent(id);
+        const sessionId = encodeURIComponent(state.wsSessionId || 'default');
+        const url = new URL(`/heresphere/video/${safeId}?sessionId=${sessionId}`, window.location.origin).toString();
+        if (uaHas('heresphere')) {
+          window.location.href = url;
+        } else {
+          window.open(url, '_blank', 'noopener');
+        }
       };
 
       window.__back = async () => {
