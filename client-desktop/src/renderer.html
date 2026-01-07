@@ -6,6 +6,7 @@
     <title>MediaViewer Desktop</title>
     <style>
       :root { color-scheme: dark; }
+      *, *::before, *::after { box-sizing: border-box; }
       body { margin: 0; font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; background: #0b0c0f; color: #e6e6e6; }
       header { padding: 12px 16px; border-bottom: 1px solid #222; display: flex; gap: 12px; align-items: center; justify-content: space-between; }
       header h1 { font-size: 14px; margin: 0; }
@@ -22,7 +23,7 @@
       .item.active { outline: 2px solid #2a2f3a; }
       .item small { opacity: 0.8; }
       video { width: 100%; max-height: 70vh; background: #000; }
-      input[type="range"] { width: 100%; }
+      input[type="range"] { width: 100%; max-width: 100%; padding: 0; border: 0; background: transparent; }
       .small { font-size: 12px; opacity: 0.85; }
       .pill { display: inline-block; padding: 2px 8px; border: 1px solid #2a2f3a; border-radius: 999px; font-size: 11px; margin-left: 6px; }
       .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
