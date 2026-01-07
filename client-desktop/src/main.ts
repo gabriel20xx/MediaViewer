@@ -30,8 +30,13 @@ async function createWindow() {
 }
 
 ipcMain.handle('serial:listPorts', async () => {
-  const ports = await SerialPort.list();
-  return ports.map((p) => ({ path: p.path }));
+  try {
+    const ports = await SerialPort.list();
+    return ports.map((p) => ({ path: p.path }));
+  } catch (err) {
+    console.error('Failed to list serial ports:', err);
+    return [];
+  }
 });
 
 ipcMain.handle('serial:connect', async (_evt, opts: { path: string; baudRate: number }) => {

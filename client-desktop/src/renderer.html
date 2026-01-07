@@ -72,7 +72,7 @@
               <input id="baud" value="115200" style="max-width: 120px;" />
             </div>
             <div class="row">
-              <button id="ports">List Ports</button>
+              <button id="ports">Refresh</button>
               <button id="connect">Connect</button>
               <button id="disconnect">Disconnect</button>
             </div>
@@ -141,7 +141,7 @@
         </div>
 
         <video id="video" controls></video>
-        <input id="progress" type="range" min="0" max="1" value="0" step="1" disabled />
+        <input id="progress" type="range" min="0" max="1" value="0" step="1" />
         <div class="small" id="progressTime">--:-- / --:--</div>
         <div class="small" id="funscriptStatus">Funscript: not loaded</div>
         <div class="meter" aria-hidden="true">
@@ -150,6 +150,17 @@
         <div class="meter-label" id="funscriptLabel">Value: 0% (000)</div>
         <div class="small" id="noVideoHint" style="display:none;">No-video mode: using sync playback time only (no /stream requests).</div>
         <div class="small" id="playback"></div>
+        
+        <div style="margin-top: 12px;">
+          <button id="btnConsole" style="width: 100%;">Show Console</button>
+        </div>
+        <div id="consoleView" style="display: none; margin-top: 8px; border: 1px solid #222; border-radius: 8px; padding: 8px; background: #000; max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 11px;">
+          <div style="margin-bottom: 6px; display: flex; justify-content: space-between;">
+            <span style="opacity: 0.7;">Console Log</span>
+            <button id="btnClearConsole" style="padding: 2px 8px; font-size: 10px;">Clear</button>
+          </div>
+          <div id="consoleOutput"></div>
+        </div>
       </div>
     </div>
 
@@ -190,6 +201,9 @@
 
         followSource: 'any',
         seenSources: new Map(),
+
+        consoleLogs: [],
+        consoleVisible: false,
       };
 
       const $ = (id) => document.getElementById(id);
@@ -202,6 +216,28 @@
       const funscriptStatusEl = $('funscriptStatus');
       const funscriptMeterEl = $('funscriptMeter');
       const funscriptLabelEl = $('funscriptLabel');
+
+      function logToConsole(level, ...args) {
+        const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
+        const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+        state.consoleLogs.push({ timestamp, level, message });
+        if (state.consoleLogs.length > 500) state.consoleLogs.shift();
+        updateConsoleView();
+        // Also log to browser console
+        if (level === 'error') console.error(...args);
+        else if (level === 'warn') console.warn(...args);
+        else console.log(...args);
+      }
+
+      function updateConsoleView() {
+        const output = $('consoleOutput');
+        if (!output) return;
+        const colorMap = { log: '#9ca3af', warn: '#fbbf24', error: '#f87171' };
+        output.innerHTML = state.consoleLogs.slice(-100).map(log => 
+          `<div style="color: ${colorMap[log.level] || '#9ca3af'}; margin-bottom: 2px;">[${log.timestamp}] ${esc(log.message)}</div>`
+        ).join('');
+        output.scrollTop = output.scrollHeight;
+      }
 
       async function apiJson(path, opts) {
         const url = new URL(path, state.serverUrl);
@@ -367,11 +403,11 @@
         });
       }
 
-      function sendSyncUpdate(update) {
+      function sendSyncUpdate(update, force = false) {
         if (!state.wsConnected || !state.ws || state.ws.readyState !== 1) return;
-        if (Date.now() < state.applyingRemoteUntil) return;
+        if (!force && Date.now() < state.applyingRemoteUntil) return;
         const now = Date.now();
-        if (now - state.lastSyncSentAt < 200) return;
+        if (!force && now - state.lastSyncSentAt < 200) return;
         state.lastSyncSentAt = now;
         state.ws.send(JSON.stringify({
           type: 'sync:update',
@@ -420,12 +456,20 @@
         }
 
         // Avoid rapid play/pause toggling: only apply when the desired paused state changes.
-        if (state.lastAppliedRemotePaused !== state.remotePaused) {
+        // Also ensure we sync if video element state doesn't match (e.g., after seeking).
+        const videoActuallyPaused = v.paused;
+        const needsUpdate = state.lastAppliedRemotePaused !== state.remotePaused || videoActuallyPaused !== state.remotePaused;
+        
+        if (needsUpdate) {
           state.lastAppliedRemotePaused = state.remotePaused;
           if (state.remotePaused) {
-            try { v.pause(); } catch {}
+            if (!videoActuallyPaused) {
+              try { v.pause(); } catch {}
+            }
           } else {
-            try { await v.play(); } catch {}
+            if (videoActuallyPaused) {
+              try { await v.play(); } catch {}
+            }
           }
         }
       }
@@ -479,6 +523,8 @@
         state.funscriptPointer = -1;
         state.lastFunscriptValue = 0;
         state.durationMs = null;
+        // Reset pause tracking so the new video's pause state is applied
+        state.lastAppliedRemotePaused = null;
         $('now').textContent = it ? `Now: ${it.filename}` : `Now: ${id}`;
         updateFunscriptUi(0);
 
@@ -527,7 +573,8 @@
         if (!actions || !Array.isArray(actions) || actions.length === 0) {
           funscriptStatusEl.textContent = 'Funscript: not loaded';
           funscriptMeterEl.style.transform = 'scaleX(0)';
-          funscriptLabelEl.textContent = 'Value: 0% (000)';
+          const axis = String(state.axis || 'L0').toUpperCase();
+          funscriptLabelEl.textContent = `${axis}: 0% (000)`;
           state.funscriptPointer = -1;
           state.lastFunscriptValue = 0;
           return;
@@ -570,7 +617,8 @@
         const pct = Math.max(0, Math.min(100, pos));
         funscriptMeterEl.style.transform = `scaleX(${pct / 100})`;
         const tcodeVal = String(Math.round((pct / 100) * 999)).padStart(3, '0');
-        funscriptLabelEl.textContent = `Value: ${Math.round(pct)}% (${tcodeVal})`;
+        const axis = String(state.axis || 'L0').toUpperCase();
+        funscriptLabelEl.textContent = `${axis}: ${Math.round(pct)}% (${tcodeVal})`;
       }
 
       function formatTime(ms) {
@@ -606,28 +654,29 @@
 
         const frame = currentFrame(timeMs / 1000, fps);
 
-        // Update progress bar.
+        // Update progress bar and time display.
         const progress = $('progress');
-        let displayDurationMs = null;
+        let durationMs = state.durationMs;
+        if (!state.noVideo && v instanceof HTMLVideoElement) {
+          const d = Number(v.duration);
+          if (Number.isFinite(d) && d > 0) durationMs = Math.round(d * 1000);
+        }
+
         if (progress instanceof HTMLInputElement) {
-          let durationMs = state.durationMs;
-          if (!state.noVideo && v instanceof HTMLVideoElement) {
-            const d = Number(v.duration);
-            if (Number.isFinite(d) && d > 0) durationMs = Math.round(d * 1000);
-          }
           if (durationMs && durationMs > 0) {
-            displayDurationMs = durationMs;
             progress.max = String(durationMs);
             progress.value = String(Math.max(0, Math.min(durationMs, timeMs)));
+            progress.disabled = false;
           } else {
             // Unknown duration yet; keep a stable bar until ffprobe/video metadata arrives.
             progress.max = '1';
             progress.value = '0';
+            progress.disabled = true;
           }
         }
 
         if (progressTimeEl) {
-          progressTimeEl.textContent = `${formatTime(timeMs)} / ${formatTime(displayDurationMs)}`;
+          progressTimeEl.textContent = `${formatTime(timeMs)} / ${formatTime(durationMs)}`;
         }
 
         updateFunscriptUi(timeMs);
@@ -684,9 +733,22 @@
       }
 
       async function listPorts() {
-        const ports = await window.mv.listSerialPorts();
-        const sel = $('port');
-        sel.innerHTML = ports.map((p) => `<option value='${esc(p.path)}'>${esc(p.path)}</option>`).join('');
+        try {
+          logToConsole('log', 'Listing serial ports...');
+          const ports = await window.mv.listSerialPorts();
+          logToConsole('log', `Found ${ports.length} serial port(s):`, ports.map(p => p.path).join(', ') || 'none');
+          const sel = $('port');
+          if (ports.length === 0) {
+            sel.innerHTML = '<option value="">No serial ports found</option>';
+          } else {
+            sel.innerHTML = ports.map((p) => `<option value='${esc(p.path)}'>${esc(p.path)}</option>`).join('');
+          }
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          logToConsole('error', 'Failed to list serial ports:', errMsg);
+          const sel = $('port');
+          sel.innerHTML = '<option value="">Error loading ports</option>';
+        }
       }
 
       $('serverUrl').addEventListener('change', (e) => { state.serverUrl = e.target.value; });
@@ -765,6 +827,13 @@
         } else {
           try { v.pause(); } catch {}
         }
+        // Sync the play/pause state to web UI
+        if (state.current) {
+          const fps = 30;
+          const timeMs = Math.round((v.currentTime || 0) * 1000);
+          const frame = currentFrame(v.currentTime || 0, fps);
+          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame }, true);
+        }
       });
 
       $('btnVideo').addEventListener('click', () => {
@@ -836,15 +905,57 @@
         const fps = 30;
         const push = () => {
           if (!state.current) return;
-          if (state.followRemote) return;
           const timeMs = Math.round((v.currentTime || 0) * 1000);
           const frame = currentFrame(v.currentTime || 0, fps);
-          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame });
+          // Manual user interactions always sync (force=true), regardless of follow-remote state
+          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame }, true);
         };
         v.addEventListener('play', push);
         v.addEventListener('pause', push);
         v.addEventListener('seeked', push);
       }
+
+      // Progress bar seeking
+      const progressBar = $('progress');
+      if (progressBar instanceof HTMLInputElement) {
+        progressBar.addEventListener('input', () => {
+          if (state.noVideo || !state.current) return;
+          const v = $('video');
+          if (!(v instanceof HTMLVideoElement)) return;
+          const seekMs = Number(progressBar.value);
+          if (!Number.isFinite(seekMs)) return;
+          try {
+            v.currentTime = seekMs / 1000;
+            // Immediately sync the seek to web UI
+            const fps = 30;
+            const frame = currentFrame(seekMs / 1000, fps);
+            sendSyncUpdate({ mediaId: state.current.id, timeMs: seekMs, paused: v.paused, fps, frame }, true);
+          } catch {}
+        });
+      }
+
+      // Console view
+      $('btnConsole').addEventListener('click', () => {
+        state.consoleVisible = !state.consoleVisible;
+        const consoleView = $('consoleView');
+        const btn = $('btnConsole');
+        if (state.consoleVisible) {
+          consoleView.style.display = '';
+          btn.textContent = 'Hide Console';
+          updateConsoleView();
+        } else {
+          consoleView.style.display = 'none';
+          btn.textContent = 'Show Console';
+        }
+      });
+
+      $('btnClearConsole').addEventListener('click', () => {
+        state.consoleLogs = [];
+        updateConsoleView();
+        logToConsole('log', 'Console cleared');
+      });
+
+      logToConsole('log', 'Desktop client initialized');
 
       tick();
     </script>
