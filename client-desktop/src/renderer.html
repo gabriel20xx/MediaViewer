@@ -213,6 +213,13 @@
             </label>
           </div>
           <div style="margin-bottom:15px;">
+            <label style="display:flex; align-items:center; color:#fff; cursor:pointer;">
+              <input type="checkbox" id="smoothResumeCheck" style="margin-right:10px;">
+              <span>Smooth resume funscript on play</span>
+            </label>
+            <div style="color:#888; font-size:0.9em; margin-left:26px; margin-top:4px;">Ramps device output briefly after pause → play.</div>
+          </div>
+          <div style="margin-bottom:15px;">
             <label style="display:block; color:#fff; margin-bottom:5px;">Script Delay (ms)</label>
             <input type="number" id="scriptDelayInput" step="10" style="width:150px; padding:5px;">
             <span style="color:#888; font-size:0.9em; margin-left:10px;">Negative = earlier, Positive = later</span>
@@ -313,6 +320,11 @@
         autoHomeTimer: null,
         serialResumeDelayMs: 0,
         serialResumeHoldUntil: 0,
+        smoothResumeFunscript: false,
+        smoothResumeStartAt: 0,
+        smoothResumeUntil: 0,
+        smoothResumePos: null,
+        smoothResumeLastAt: 0,
         serialDriveTimer: null,
         _serialLastPaused: true,
         invertScript: false,
@@ -357,6 +369,23 @@
         consoleLogs: [],
         consoleVisible: false,
       };
+
+      // Coordinated start: schedule local play for an exact wall-clock time.
+      let _scheduledPlayAtLocalMs = 0;
+      function scheduleLocalPlayAt(v, playAtLocalMs) {
+        if (!(v instanceof HTMLVideoElement)) return;
+        const when = Number(playAtLocalMs) || 0;
+        if (!Number.isFinite(when) || when <= 0) return;
+        if (Math.abs((Number(_scheduledPlayAtLocalMs) || 0) - when) < 10) return;
+
+        _scheduledPlayAtLocalMs = when;
+        const delayMs = Math.max(0, Math.round(when - Date.now()));
+        state.applyingRemoteUntil = Math.max(state.applyingRemoteUntil, when + 1000);
+        try { v.pause(); } catch {}
+        window.setTimeout(() => {
+          try { v.play(); } catch {}
+        }, delayMs);
+      }
 
       const $ = (id) => document.getElementById(id);
       const statusEl = $('status');
@@ -481,6 +510,7 @@
             if (typeof p.autoHomeDelay === 'number') state.autoHomeDelay = p.autoHomeDelay;
             if (typeof p.autoHomeTransition === 'number') state.autoHomeTransition = p.autoHomeTransition;
             if (typeof p.serialResumeDelayMs === 'number') state.serialResumeDelayMs = p.serialResumeDelayMs;
+            if (typeof p.smoothResumeFunscript === 'boolean') state.smoothResumeFunscript = p.smoothResumeFunscript;
             if (typeof p.invertScript === 'boolean') state.invertScript = p.invertScript;
             if (typeof p.scriptDelay === 'number') state.scriptDelay = p.scriptDelay;
             if (typeof p.interpolationMode === 'string') state.interpolationMode = p.interpolationMode;
@@ -512,6 +542,7 @@
           autoHomeDelay: state.autoHomeDelay,
           autoHomeTransition: state.autoHomeTransition,
           serialResumeDelayMs: state.serialResumeDelayMs,
+          smoothResumeFunscript: state.smoothResumeFunscript,
           invertScript: state.invertScript,
           scriptDelay: state.scriptDelay,
           interpolationMode: state.interpolationMode,
@@ -547,6 +578,8 @@
           const line = `${axis}${vvv}I${iii}`;
           logToConsole('log', `Auto-home executing (immediate): ${line}`);
           await window.mv.tcodeSend(line);
+          state.lastTcodeSentAt = Date.now();
+          state.lastTcodeSentPos = pos;
         } catch (err) {
           logToConsole('error', 'Auto-home failed:', err);
         }
@@ -581,11 +614,26 @@
         // Apply resume delay when transitioning from paused -> playing.
         if (state._serialLastPaused && !paused) {
           const delay = Math.max(0, Math.round(Number(state.serialResumeDelayMs) || 0));
-          state.serialResumeHoldUntil = Date.now() + delay;
+          const startAt = Date.now() + delay;
+          state.serialResumeHoldUntil = startAt;
+          if (state.smoothResumeFunscript) {
+            state.smoothResumeStartAt = startAt;
+            state.smoothResumeUntil = startAt + 600;
+            state.smoothResumeLastAt = startAt;
+            state.smoothResumePos = (typeof state.lastTcodeSentPos === 'number' && Number.isFinite(state.lastTcodeSentPos))
+              ? state.lastTcodeSentPos
+              : null;
+          }
         }
         state._serialLastPaused = paused;
 
-        if (paused) return;
+        if (paused) {
+          state.smoothResumeStartAt = 0;
+          state.smoothResumeUntil = 0;
+          state.smoothResumePos = null;
+          state.smoothResumeLastAt = 0;
+          return;
+        }
         if (Date.now() < (Number(state.serialResumeHoldUntil) || 0)) return;
 
         const actions = state.funscript.actions;
@@ -607,7 +655,27 @@
         pos = limits.min + (pos / 100) * range;
         pos = clamp(pos, 0, 100);
 
+        // Smooth resume ramp: briefly ease into the target position after pause → play.
         const now = Date.now();
+        if (state.smoothResumeFunscript && now < (Number(state.smoothResumeUntil) || 0)) {
+          if (!(typeof state.smoothResumePos === 'number' && Number.isFinite(state.smoothResumePos))) {
+            state.smoothResumePos = pos;
+          }
+          const last = Number(state.smoothResumeLastAt) || now;
+          const dt = Math.max(0, now - last);
+          state.smoothResumeLastAt = now;
+
+          const tauMs = 150; // lower = snappier, higher = smoother
+          const alpha = 1 - Math.exp(-dt / tauMs);
+          state.smoothResumePos = state.smoothResumePos + (pos - state.smoothResumePos) * alpha;
+          pos = state.smoothResumePos;
+        } else if ((Number(state.smoothResumeUntil) || 0) > 0) {
+          state.smoothResumeStartAt = 0;
+          state.smoothResumeUntil = 0;
+          state.smoothResumePos = null;
+          state.smoothResumeLastAt = 0;
+        }
+
         const lastAt = Number(state.lastTcodeSentAt) || 0;
         const lastPos = (typeof state.lastTcodeSentPos === 'number' && Number.isFinite(state.lastTcodeSentPos))
           ? state.lastTcodeSentPos
@@ -670,6 +738,8 @@
             const line = `${axis}${vvv}I${iii}`;
             logToConsole('log', `Auto-home executing: ${line}`);
             if (window.mv) await window.mv.tcodeSend(line);
+            state.lastTcodeSentAt = Date.now();
+            state.lastTcodeSentPos = pos;
           } catch (err) {
             logToConsole('error', 'Auto-home failed:', err);
           }
@@ -814,6 +884,8 @@
                 state.clientsMetadata.set(client.clientId, {
                   userAgent: client.userAgent || 'Unknown',
                   ipAddress: client.ipAddress || 'Unknown',
+                  uiView: typeof client.uiView === 'string' ? client.uiView : undefined,
+                  uiMediaId: client.uiMediaId === null ? null : typeof client.uiMediaId === 'string' ? client.uiMediaId : undefined,
                 });
               }
             }
@@ -839,7 +911,7 @@
 
       function sendSyncUpdate(update, force = false, toClientId = null) {
         if (!state.wsConnected || !state.ws || state.ws.readyState !== 1) return;
-        if (!force && Date.now() < state.applyingRemoteUntil) return;
+        if (Date.now() < state.applyingRemoteUntil) return;
         const now = Date.now();
         if (!force && now - state.lastSyncSentAt < 200) return;
         state.lastSyncSentAt = now;
@@ -894,6 +966,14 @@
              // ... validation
              return; 
           }
+
+          const meta = state.clientsMetadata.get(state.followSource);
+          const uiView = meta && typeof meta.uiView === 'string' ? meta.uiView : '';
+          const isPlayerView = uiView === 'player' || uiView === 'vr';
+          if (uiView && !isPlayerView) {
+            // WebUI isn't currently on a play screen; do not auto-load or seek.
+            return;
+          }
         } else {
            // If followSource is empty ("(None)"), do NOT follow "any".
            // User wants strict following if I removed "any".
@@ -923,8 +1003,6 @@
         // Be strict about paused parsing (handles booleans, 0/1, and 'true'/'false').
         const pausedRaw = remote.paused;
         const paused = pausedRaw === true || pausedRaw === 1 || pausedRaw === '1' || pausedRaw === 'true';
-        const pausedChanged = state.remotePaused !== paused;
-        state.remotePaused = paused;
         state.remoteFps = Math.max(1, Math.round(Number(remote.fps) || 30));
 
         const nowMs = Date.now();
@@ -947,15 +1025,25 @@
           ? state.serverClockOffsetMs
           : 0;
         const baselineRemoteNow = updatedAtMs !== null ? updatedAtMs + clockOffset : nowMs;
-        const driftMs = paused ? 0 : Math.max(0, nowMs - baselineRemoteNow);
+
+        let playAtLocalMs = null;
+        if (!paused && remote.playAt) {
+          const t = Date.parse(String(remote.playAt));
+          if (!Number.isNaN(t)) playAtLocalMs = t + clockOffset;
+        }
+
+        const treatAsPaused = (playAtLocalMs != null && playAtLocalMs > nowMs + 10) ? true : paused;
+        const driftMs = treatAsPaused ? 0 : Math.max(0, nowMs - baselineRemoteNow);
         const projectedTimeMs = Math.max(0, nextRemoteTimeMs + driftMs);
 
         state.remoteProjectedTimeMs = projectedTimeMs;
         state.remoteProjectedAtMs = nowMs;
         state.remoteLastUpdateAt = nowMs;
 
+        const pausedChanged = state.remotePaused !== treatAsPaused;
+        state.remotePaused = treatAsPaused;
         if (pausedChanged) {
-          logToConsole('log', `Remote pause state changed: ${paused ? 'PAUSED' : 'PLAYING'}`);
+          logToConsole('log', `Remote pause state changed: ${treatAsPaused ? 'PAUSED' : 'PLAYING'}`);
         }
 
         // In no-video mode, do not load/control the stream.
@@ -990,9 +1078,19 @@
             state.lastAppliedRemotePaused = state.remotePaused;
             state.applyingRemoteUntil = nowMs + 1500; // Prevent immediate sync back
             if (state.remotePaused) {
-              logToConsole('log', 'Pausing video (remote)');
-              try { v.pause(); } catch {}
-              triggerAutoHome(); // Trigger auto-home when remotely paused
+              if (playAtLocalMs != null && playAtLocalMs > nowMs + 10) {
+                // Scheduled play: keep paused until playAt, without triggering auto-home.
+                const startTimeSeconds = (nextRemoteTimeMs + Math.max(0, playAtLocalMs - baselineRemoteNow)) / 1000;
+                logToConsole('log', `Scheduling play at ${new Date(playAtLocalMs).toISOString()}`);
+                try { v.pause(); } catch {}
+                cancelAutoHome();
+                try { v.currentTime = startTimeSeconds; } catch {}
+                scheduleLocalPlayAt(v, playAtLocalMs);
+              } else {
+                logToConsole('log', 'Pausing video (remote)');
+                try { v.pause(); } catch {}
+                triggerAutoHome(); // Trigger auto-home when remotely paused
+              }
             } else {
               logToConsole('log', 'Playing video (remote)');
               try { await v.play(); } catch {}
@@ -1897,6 +1995,7 @@
       $('btnSettings').addEventListener('click', () => {
         // Update UI from state
         $('invertScriptCheck').checked = state.invertScript;
+        $('smoothResumeCheck').checked = state.smoothResumeFunscript;
         $('scriptDelayInput').value = state.scriptDelay;
         const interpSel = $('interpModeSelect');
         if (interpSel) interpSel.value = state.interpolationMode || 'spline';
@@ -1919,6 +2018,7 @@
 
       $('btnResetSettings').addEventListener('click', () => {
         state.invertScript = false;
+        state.smoothResumeFunscript = false;
         state.scriptDelay = 0;
         state.interpolationMode = 'spline';
         state.axisLimits = {
@@ -1931,6 +2031,7 @@
         
         // Update UI
         $('invertScriptCheck').checked = false;
+        $('smoothResumeCheck').checked = false;
         $('scriptDelayInput').value = 0;
         const interpSel = $('interpModeSelect');
         if (interpSel) interpSel.value = 'spline';
@@ -1946,6 +2047,11 @@
 
       $('invertScriptCheck').addEventListener('change', () => {
         state.invertScript = $('invertScriptCheck').checked;
+        savePrefs();
+      });
+
+      $('smoothResumeCheck').addEventListener('change', () => {
+        state.smoothResumeFunscript = $('smoothResumeCheck').checked;
         savePrefs();
       });
 
@@ -1995,8 +2101,25 @@
         if (!(v instanceof HTMLVideoElement)) return;
         if (state.noVideo) return;
         if (v.paused) {
-          try { await v.play(); } catch {}
-          cancelAutoHome(); // Cancel auto-home when playing
+          // Coordinated start: schedule the play slightly in the future.
+          const clockOffset = typeof state.serverClockOffsetMs === 'number' && Number.isFinite(state.serverClockOffsetMs)
+            ? state.serverClockOffsetMs
+            : 0;
+          const playAtServerMs = (Date.now() - clockOffset) + 400;
+          const playAt = new Date(playAtServerMs).toISOString();
+
+          if (state.current) {
+            const fps = 30;
+            const timeMs = Math.round((v.currentTime || 0) * 1000);
+            const frame = currentFrame(v.currentTime || 0, fps);
+            sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame, playAt }, true, getControlTargetClientId());
+          }
+
+          const playAtLocalMs = playAtServerMs + clockOffset;
+          cancelAutoHome();
+          try { v.pause(); } catch {}
+          scheduleLocalPlayAt(v, playAtLocalMs);
+          return;
         } else {
           try { v.pause(); } catch {}
           triggerAutoHome(); // Trigger auto-home when pausing
@@ -2006,7 +2129,7 @@
           const fps = 30;
           const timeMs = Math.round((v.currentTime || 0) * 1000);
           const frame = currentFrame(v.currentTime || 0, fps);
-          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame }, true, getControlTargetClientId());
+          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame, playAt: v.paused ? null : undefined }, true, getControlTargetClientId());
         }
       });
 
@@ -2073,10 +2196,17 @@
         // If changed to a specific source, check if we have cached state.
         const cached = state.sourceStates.get(val);
         if (cached) {
+          const meta = state.clientsMetadata.get(val);
+          const uiView = meta && typeof meta.uiView === 'string' ? meta.uiView : '';
+          const isPlayerView = uiView === 'player' || uiView === 'vr';
+
+          if (uiView && !isPlayerView) {
+            // User requested: don't auto-load media when the WebUI isn't on a play screen.
+            logToConsole('log', `Sync WebUI changed to ${val} - source is in ${uiView} view; waiting for player update`);
+            return;
+          }
+
           logToConsole('log', `Sync WebUI changed to ${val} - applying cached state`);
-          // Force apply even if it looks old, because we just switched to it.
-          // But applyRemoteSyncState checks if remote.fromClientId matches state.followSource,
-          // which we just updated.
           applyRemoteSyncState(cached);
         } else {
              logToConsole('log', `Sync WebUI changed to ${val} - waiting for next update`);
@@ -2163,7 +2293,7 @@
       const v = $('video');
       if (v instanceof HTMLVideoElement) {
         const fps = 30;
-        const push = () => {
+        const push = (e) => {
           // Don't send sync updates if we're currently applying remote state (prevent feedback loop)
           if (state.isApplyingRemoteState) return;
           if (!state.current) return;
@@ -2173,8 +2303,22 @@
           // Auto-home should also respond to manual pauses triggered via native video controls.
           if (v.paused) triggerAutoHome();
           else cancelAutoHome();
+          // Coordinated start when user hits play.
+          if (e && e.type === 'play') {
+            const clockOffset = typeof state.serverClockOffsetMs === 'number' && Number.isFinite(state.serverClockOffsetMs)
+              ? state.serverClockOffsetMs
+              : 0;
+            const playAtServerMs = (Date.now() - clockOffset) + 400;
+            const playAt = new Date(playAtServerMs).toISOString();
+            sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame, playAt }, true, getControlTargetClientId());
+            const playAtLocalMs = playAtServerMs + clockOffset;
+            try { v.pause(); } catch {}
+            scheduleLocalPlayAt(v, playAtLocalMs);
+            return;
+          }
+
           // Manual user interactions always sync (force=true), regardless of follow-remote state
-          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame }, true, getControlTargetClientId());
+          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame, playAt: v.paused ? null : undefined }, true, getControlTargetClientId());
         };
         v.addEventListener('play', push);
         v.addEventListener('pause', push);

@@ -166,7 +166,7 @@ export function registerVrIntegrations(
     res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
     res.setHeader('Cache-Control', 'public, max-age=3600');
     if (err) {
-      res.send(svgThumbError("Thumbnail couldn't be loaded"));
+      res.send(svgThumbError("Thumbnail couldn't load"));
       return;
     }
     res.send(svgThumb(title, footer));

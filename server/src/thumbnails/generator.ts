@@ -36,7 +36,7 @@ function trimStderr(s: string, max = 2000): string {
 export async function generateThumbnail(
     inputPath: string,
     width: number,
-    timeOffsetSeconds: number = 20
+    timeOffsetSeconds: number = 30
 ): Promise<string> {
     await ensureCacheDir();
 

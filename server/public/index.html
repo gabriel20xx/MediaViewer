@@ -33,6 +33,7 @@
         remoteProjectedTimeMs: 0,
         remoteProjectedAtMs: 0,
         remoteServerClockOffsetMs: null,
+        _scheduledPlayAtLocalMs: 0,
         thumbVer: 0,
       };
 
@@ -44,9 +45,26 @@
         return res.json();
       }
 
+      function sendClientStatus() {
+        try {
+          if (!state.wsConnected || !state.ws || state.ws.readyState !== 1) return;
+          if (!state.clientId) return;
+          state.ws.send(JSON.stringify({
+            type: 'client:status',
+            clientId: state.clientId,
+            sessionId: state.wsSessionId,
+            uiView: state.view,
+            mediaId: state.current?.id ?? null,
+          }));
+        } catch {
+          // ignore
+        }
+      }
+
       function setView(view, current = null) {
         state.view = view;
         state.current = current;
+        sendClientStatus();
         render();
       }
 
@@ -132,6 +150,8 @@
         ws.addEventListener('open', () => {
           state.wsConnected = true;
           ws.send(JSON.stringify({ type: 'sync:hello', clientId: state.clientId, sessionId: state.wsSessionId }));
+          // Let other clients know whether we're currently in grid/player/vr.
+          sendClientStatus();
           updateSyncStatus();
         });
 
@@ -162,6 +182,22 @@
           clientId: state.clientId,
           ...update,
         }));
+      }
+
+      function scheduleLocalPlayAt(v, playAtLocalMs) {
+        if (!(v instanceof HTMLVideoElement)) return;
+        const when = Number(playAtLocalMs) || 0;
+        if (!Number.isFinite(when) || when <= 0) return;
+        if (Math.abs((Number(state._scheduledPlayAtLocalMs) || 0) - when) < 10) return;
+
+        state._scheduledPlayAtLocalMs = when;
+        const delayMs = Math.max(0, Math.round(when - Date.now()));
+        state._applyingRemoteUntil = Math.max(state._applyingRemoteUntil, when + 1000);
+
+        try { v.pause(); } catch {}
+        window.setTimeout(() => {
+          try { v.play(); } catch {}
+        }, delayMs);
       }
 
       async function getItemInfo(id) {
@@ -242,7 +278,15 @@
           : 0;
         const baselineRemoteNow = updatedAtMs !== null ? updatedAtMs + clockOffset : now;
         const paused = Boolean(remote.paused);
-        const driftMs = paused ? 0 : Math.max(0, now - baselineRemoteNow);
+
+        let playAtLocalMs = null;
+        if (!paused && remote.playAt) {
+          const t = Date.parse(String(remote.playAt));
+          if (!Number.isNaN(t)) playAtLocalMs = t + clockOffset;
+        }
+
+        const treatAsPaused = (playAtLocalMs != null && playAtLocalMs > now + 10) ? true : paused;
+        const driftMs = treatAsPaused ? 0 : Math.max(0, now - baselineRemoteNow);
         const projectedTimeMs = remoteTimeMs + driftMs;
 
         state.remoteProjectedTimeMs = projectedTimeMs;
@@ -257,8 +301,14 @@
           try { v.currentTime = targetTime; } catch {}
         }
 
-        if (paused) {
+        if (treatAsPaused) {
           try { v.pause(); } catch {}
+          if (playAtLocalMs != null && playAtLocalMs > now + 10) {
+            // Ensure exact start position at playAt.
+            const startTimeSeconds = (remoteTimeMs + Math.max(0, playAtLocalMs - baselineRemoteNow)) / 1000;
+            try { v.currentTime = startTimeSeconds; } catch {}
+            scheduleLocalPlayAt(v, playAtLocalMs);
+          }
         } else {
           try { await v.play(); } catch {}
         }
@@ -764,7 +814,7 @@
             status.classList.add('hidden');
           };
           const onError = () => {
-            status.textContent = "Thumbnail couldn't be loaded";
+            status.textContent = "Thumbnail couldn't load";
             status.classList.remove('hidden');
           };
 
@@ -1000,7 +1050,24 @@
           const timeMs = Math.round((v.currentTime || 0) * 1000);
           const frame = Math.max(0, Math.floor((v.currentTime || 0) * fps));
           const force = e && (e.type === 'play' || e.type === 'pause' || e.type === 'seeked');
-          sendSyncUpdate({ mediaId, timeMs, paused: v.paused, fps, frame }, force);
+
+          // Coordinated start: schedule play a moment in the future so other synced clients can align.
+          if (force && e && e.type === 'play') {
+            const clockOffset = typeof state.remoteServerClockOffsetMs === 'number' && Number.isFinite(state.remoteServerClockOffsetMs)
+              ? state.remoteServerClockOffsetMs
+              : 0;
+            const playAtServerMs = (Date.now() - clockOffset) + 400;
+            const playAt = new Date(playAtServerMs).toISOString();
+            const playAtLocalMs = playAtServerMs + clockOffset;
+
+            sendSyncUpdate({ mediaId, timeMs, paused: false, fps, frame, playAt }, true);
+            try { v.pause(); } catch {}
+            try { v.currentTime = timeMs / 1000; } catch {}
+            scheduleLocalPlayAt(v, playAtLocalMs);
+            return;
+          }
+
+          sendSyncUpdate({ mediaId, timeMs, paused: v.paused, fps, frame, playAt: v.paused ? null : undefined }, force);
         };
 
         if (v instanceof HTMLVideoElement) {

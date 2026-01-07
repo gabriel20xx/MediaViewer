@@ -50,6 +50,10 @@ let wss: WebSocketServer;
 
 // Store client metadata (clientId -> { userAgent, ipAddress })
 const clientMetadata = new Map<string, { userAgent: string; ipAddress: string }>();
+// Store lightweight per-client UI status (clientId -> { uiView, mediaId })
+const clientUiStatus = new Map<string, { uiView?: string; mediaId?: string | null }>();
+// Ephemeral per-session scheduled play time (ISO string). Used to coordinate exact start.
+const sessionPlayAt = new Map<string, string>();
 const clientsById = new Map<string, Set<WsClient>>();
 type WsClient = {
   send(data: string): void;
@@ -143,15 +147,24 @@ function ensureSelfSignedHttpsCert(keyPath: string, certPath: string) {
 }
 
 function buildClientsList() {
-  return Array.from(clientMetadata.entries()).map(([id, meta]) => ({
-    clientId: id,
-    userAgent: meta.userAgent,
-    ipAddress: meta.ipAddress,
-  }));
+  return Array.from(clientMetadata.entries()).map(([id, meta]) => {
+    const ui = clientUiStatus.get(id);
+    return {
+      clientId: id,
+      userAgent: meta.userAgent,
+      ipAddress: meta.ipAddress,
+      uiView: ui?.uiView,
+      uiMediaId: typeof ui?.mediaId === 'string' ? ui.mediaId : ui?.mediaId === null ? null : undefined,
+    };
+  });
 }
 
 async function broadcastSyncState(sessionId: string) {
-  const state = await getSyncPlaybackState(db, sessionId);
+  const baseState = await getSyncPlaybackState(db, sessionId);
+  const playAt = sessionPlayAt.get(sessionId);
+  const state = (!baseState.paused && playAt)
+    ? ({ ...baseState, playAt } as any)
+    : baseState;
   // Include all client metadata
   const clients = buildClientsList();
   const msg = JSON.stringify({ type: 'sync:state', state, clients });
@@ -166,7 +179,11 @@ function sendSyncStateToClient(sessionId: string, toClientId: string, state: any
   const targets = clientsById.get(toClientId);
   if (!targets || targets.size === 0) return;
   const clients = buildClientsList();
-  const msg = JSON.stringify({ type: 'sync:state', state: { sessionId, ...state }, clients });
+  const playAt = sessionPlayAt.get(sessionId);
+  const stateWithPlayAt = (state && state.paused === false && playAt)
+    ? { sessionId, ...state, playAt }
+    : { sessionId, ...state };
+  const msg = JSON.stringify({ type: 'sync:state', state: stateWithPlayAt, clients });
   for (const ws of targets) {
     if (ws.readyState === 1) ws.send(msg);
   }
@@ -221,6 +238,7 @@ function registerWsHandlers() {
   ws.on('close', () => {
     if (ws.__mvClientId) {
       clientMetadata.delete(ws.__mvClientId);
+      clientUiStatus.delete(ws.__mvClientId);
       const set = clientsById.get(ws.__mvClientId);
       if (set) {
         set.delete(ws);
@@ -271,11 +289,42 @@ function registerWsHandlers() {
       return;
     }
 
+    if (msg.type === 'client:status') {
+      const clientId = String(msg.clientId ?? ws.__mvClientId ?? '').trim();
+      const sessionId = String(msg.sessionId ?? ws.__mvSessionId ?? 'default').trim() || 'default';
+      if (!clientId) return;
+
+      const uiView = typeof msg.uiView === 'string' ? String(msg.uiView).trim() : '';
+      const uiMediaIdRaw = msg.mediaId;
+      const uiMediaId = uiMediaIdRaw === null ? null : typeof uiMediaIdRaw === 'string' ? String(uiMediaIdRaw).trim() : undefined;
+
+      const prev = clientUiStatus.get(clientId);
+      const next = {
+        uiView: uiView || prev?.uiView,
+        mediaId: uiMediaId !== undefined ? uiMediaId : prev?.mediaId,
+      };
+      clientUiStatus.set(clientId, next);
+
+      // Broadcast so other clients can make decisions based on UI state.
+      broadcastSyncState(sessionId).catch(console.error);
+      return;
+    }
+
     if (msg.type === 'sync:update') {
       const clientId = String(msg.clientId ?? ws.__mvClientId ?? '').trim();
       const sessionId = String(msg.sessionId ?? ws.__mvSessionId ?? 'default').trim() || 'default';
       const mediaId = msg.mediaId === null ? null : String(msg.mediaId ?? '').trim();
       if (!clientId || mediaId === '') return;
+
+      // Optional scheduled play time (ISO). Clients use this to start at the same moment.
+      const playAtRaw = (msg as any).playAt;
+      const playAt = playAtRaw === null ? null : (typeof playAtRaw === 'string' ? String(playAtRaw).trim() : '');
+      if (playAt === null) {
+        sessionPlayAt.delete(sessionId);
+      } else if (playAt) {
+        const t = Date.parse(playAt);
+        if (!Number.isNaN(t)) sessionPlayAt.set(sessionId, new Date(t).toISOString());
+      }
 
       const toClientId = typeof msg.toClientId === 'string' ? String(msg.toClientId).trim() : '';
 
@@ -286,6 +335,8 @@ function registerWsHandlers() {
 
       // Targeted control: route directly to a single client without updating global session state.
       if (toClientId) {
+        if (paused) sessionPlayAt.delete(sessionId);
+        const scheduled = !paused ? sessionPlayAt.get(sessionId) : undefined;
         sendSyncStateToClient(sessionId, toClientId, {
           mediaId,
           timeMs,
@@ -293,10 +344,13 @@ function registerWsHandlers() {
           fps,
           frame,
           fromClientId: clientId,
+          ...(scheduled ? { playAt: scheduled } : {}),
           updatedAt: new Date().toISOString(),
         });
         return;
       }
+
+      if (paused) sessionPlayAt.delete(sessionId);
 
       await upsertSyncPlaybackState(db, {
         sessionId,
