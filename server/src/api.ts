@@ -9,10 +9,11 @@ import { newId } from './ids.js';
 import { getSyncPlaybackState, upsertSyncPlaybackState } from './syncState.js';
 import { probeDurationMsWithFfprobe } from './ffprobe.js';
 
-import { generateThumbnail } from './thumbnails/generator.js';
+import { generateThumbnail, CACHE_DIR } from './thumbnails/generator.js';
 
 // Global scan progress tracker
 let scanProgress = { isScanning: false, scanned: 0, total: 0, message: '' };
+
 
 
 export function buildApiRouter(opts: {
@@ -24,6 +25,17 @@ export function buildApiRouter(opts: {
 
   router.get('/health', (_req, res) => {
     res.json({ ok: true });
+  });
+
+  router.post('/cache/clear', async (_req, res) => {
+    try {
+      // Clear the thumbnail cache directory
+      await fs.rm(CACHE_DIR, { recursive: true, force: true });
+      await fs.mkdir(CACHE_DIR, { recursive: true });
+      res.json({ ok: true, message: 'Cache cleared' });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   router.post('/scan', async (_req, res) => {

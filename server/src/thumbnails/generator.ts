@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 
 // Use a temp directory for cached thumbnails
-const CACHE_DIR = path.join(process.cwd(), 'cache', 'thumbs');
+export const CACHE_DIR = path.join(process.cwd(), 'cache', 'thumbs');
 
 // Ensure cache dir exists
 (async () => {
@@ -16,7 +16,7 @@ const CACHE_DIR = path.join(process.cwd(), 'cache', 'thumbs');
 export async function generateThumbnail(
     inputPath: string,
     width: number,
-    timeOffsetSeconds: number = 5
+    timeOffsetSeconds: number = 10
 ): Promise<string> {
     // Generate a unique filename based on input path + params
     const hash = createHash('md5').update(`${inputPath}:${width}:${timeOffsetSeconds}`).digest('hex');

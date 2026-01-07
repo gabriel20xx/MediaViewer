@@ -28,6 +28,7 @@
         wsSessionId: 'default',
         _applyingRemoteUntil: 0,
         _lastSentAt: 0,
+        thumbVer: 0,
       };
 
       function el(id) { return document.getElementById(id); }
@@ -338,7 +339,7 @@
         // Use server-side generated thumbnail for video.
         const thumbUrl = item.mediaType === 'image' 
           ? `/api/media/${item.id}/stream`
-          : `/api/media/${item.id}/thumb`;
+          : `/api/media/${item.id}/thumb?v=${state.thumbVer}`;
 
         const thumb = `<img class="thumbMedia" loading="lazy" src="${thumbUrl}" alt="${escapeHtml(item.filename)}" />`;
         // No client-side processing status needed anymore

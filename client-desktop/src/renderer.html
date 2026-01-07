@@ -571,6 +571,9 @@
            state.followSource = '';
            savePrefs();
            sel.value = '';
+           // Source disconnected: Unload the video.
+           applyRemoteSyncState({ mediaId: null });
+           logToConsole('log', 'Follow source disconnected - unloading media');
         }
       }
 
