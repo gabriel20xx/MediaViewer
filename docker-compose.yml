@@ -1,0 +1,28 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: mediaviewer
+      POSTGRES_PASSWORD: mediaviewer
+      POSTGRES_DB: mediaviewer
+    ports:
+      - "55432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  server:
+    build:
+      context: ./server
+    environment:
+      DATABASE_URL: postgresql://mediaviewer:mediaviewer@db:5432/mediaviewer
+      MEDIA_ROOT: /media
+      PORT: 8080
+    ports:
+      - "8080:8080"
+    depends_on:
+      - db
+    volumes:
+      - ./media:/media:ro
+
+volumes:
+  db_data:

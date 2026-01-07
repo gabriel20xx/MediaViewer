@@ -1,0 +1,25 @@
+{
+  "name": "mediaviewer-client-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "main": "dist/main.js",
+  "type": "module",
+  "scripts": {
+    "dev": "npm run build && electron dist/main.js",
+    "build": "tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "start": "electron dist/main.js"
+  },
+  "dependencies": {
+    "@electron/remote": "^2.1.2",
+    "electron": "^30.0.9",
+    "node-fetch": "^3.3.2",
+    "serialport": "^12.0.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.10",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4"
+  }
+}

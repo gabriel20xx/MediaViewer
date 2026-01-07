@@ -1,0 +1,38 @@
+name: Desktop Client
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client-desktop/package-lock.json
+
+      - name: Install
+        working-directory: client-desktop
+        run: |
+          if (Test-Path package-lock.json) { npm ci } else { npm install }
+
+      - name: Build
+        working-directory: client-desktop
+        run: npm run build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-client-dist
+          path: client-desktop/dist/

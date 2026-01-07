@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>MediaViewer</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; background: #0b0c0f; color: #e6e6e6; }
+      header { position: sticky; top: 0; background: rgba(11,12,15,0.9); backdrop-filter: blur(8px); border-bottom: 1px solid #222; padding: 12px 16px; display: flex; gap: 12px; align-items: center; }
+      header h1 { font-size: 14px; margin: 0; font-weight: 600; color: #fff; }
+      .search { flex: 1; }
+      .search input { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #2a2f3a; background: #11131a; color: #e6e6e6; }
+      .btn { padding: 10px 12px; border-radius: 8px; border: 1px solid #2a2f3a; background: #11131a; color: #e6e6e6; cursor: pointer; }
+      .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+      main { padding: 16px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+      .card { border: 1px solid #222; border-radius: 10px; overflow: hidden; background: #0f1117; }
+      .thumb { aspect-ratio: 16/9; display: grid; place-items: center; background: #0b0c0f; border-bottom: 1px solid #222; }
+      .thumb span { font-size: 12px; opacity: 0.8; }
+      .meta { padding: 10px; display: grid; gap: 6px; }
+      .name { font-size: 12px; line-height: 1.2; word-break: break-word; }
+      .tags { display: flex; gap: 6px; flex-wrap: wrap; }
+      .tag { font-size: 11px; padding: 2px 6px; border-radius: 999px; border: 1px solid #2a2f3a; background: #11131a; }
+      .row { display: flex; gap: 8px; align-items: center; }
+      .pager { display: flex; gap: 8px; justify-content: center; padding: 16px 0; }
+      a { color: inherit; text-decoration: none; }
+      .playerWrap { padding: 16px; }
+      video { width: 100%; max-height: 80vh; background: #000; }
+      .small { font-size: 12px; opacity: 0.85; }
+      .topbar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
+      .topbar a { border: 1px solid #2a2f3a; padding: 8px 10px; border-radius: 8px; background: #11131a; }
+    </style>
+    <script>
+      const state = {
+        q: '',
+        page: 1,
+        pageSize: 48,
+        total: 0,
+        items: [],
+        view: 'grid', // grid | player | vr
+        current: null,
+      };
+
+      function el(id) { return document.getElementById(id); }
+
+      async function apiJson(url, opts) {
+        const res = await fetch(url, opts);
+        if (!res.ok) throw new Error(await res.text());
+        return res.json();
+      }
+
+      function setView(view, current = null) {
+        state.view = view;
+        state.current = current;
+        render();
+      }
+
+      function formatPageLabel() {
+        const maxPage = Math.max(1, Math.ceil(state.total / state.pageSize));
+        return `Page ${state.page} / ${maxPage} (${state.total} items)`;
+      }
+
+      async function loadList() {
+        const q = encodeURIComponent(state.q);
+        const data = await apiJson(`/api/media?q=${q}&page=${state.page}&pageSize=${state.pageSize}`);
+        state.total = data.total;
+        state.items = data.items;
+      }
+
+      async function doSearch(value) {
+        state.q = value;
+        state.page = 1;
+        await loadList();
+        render();
+      }
+
+      function card(item) {
+        const tagF = item.hasFunscript ? `<span class="tag">funscript</span>` : '';
+        const tagT = `<span class="tag">${item.mediaType}</span>`;
+        return `
+          <div class="card">
+            <div class="thumb" role="button" tabindex="0" onclick="window.__openPlayer('${item.id}')">
+              <span>Open</span>
+            </div>
+            <div class="meta">
+              <div class="name">${escapeHtml(item.filename)}</div>
+              <div class="tags">${tagT}${tagF}</div>
+              <div class="row">
+                <button class="btn" onclick="window.__openPlayer('${item.id}')">Play</button>
+                <button class="btn" onclick="window.__openVr('${item.id}')">VR</button>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      function escapeHtml(s) {
+        return String(s)
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#039;');
+      }
+
+      async function openById(id) {
+        const item = state.items.find((x) => x.id === id) || (await apiJson(`/api/media/${id}/fileinfo`).then(() => ({ id })));
+        setView('player', { id, item });
+      }
+
+      function renderGrid() {
+        el('app').innerHTML = `
+          <header>
+            <h1>MediaViewer</h1>
+            <div class="search"><input id="q" placeholder="Search by filename" value="${escapeHtml(state.q)}" /></div>
+            <button class="btn" id="scan">Rescan</button>
+          </header>
+          <main>
+            <div class="small">${formatPageLabel()}</div>
+            <div class="grid">${state.items.map(card).join('')}</div>
+            <div class="pager">
+              <button class="btn" id="prev">Prev</button>
+              <button class="btn" id="next">Next</button>
+            </div>
+          </main>
+        `;
+
+        el('q').addEventListener('input', (e) => {
+          const val = e.target.value;
+          window.clearTimeout(window.__qT);
+          window.__qT = window.setTimeout(() => doSearch(val), 200);
+        });
+
+        el('scan').addEventListener('click', async () => {
+          el('scan').disabled = true;
+          try {
+            await apiJson('/api/scan', { method: 'POST' });
+            await loadList();
+            render();
+          } finally {
+            el('scan').disabled = false;
+          }
+        });
+
+        const maxPage = Math.max(1, Math.ceil(state.total / state.pageSize));
+        el('prev').disabled = state.page <= 1;
+        el('next').disabled = state.page >= maxPage;
+        el('prev').addEventListener('click', async () => {
+          state.page = Math.max(1, state.page - 1);
+          await loadList();
+          render();
+        });
+        el('next').addEventListener('click', async () => {
+          state.page = Math.min(maxPage, state.page + 1);
+          await loadList();
+          render();
+        });
+      }
+
+      function renderPlayer() {
+        const id = state.current?.id;
+        el('app').innerHTML = `
+          <header>
+            <h1>MediaViewer</h1>
+            <div class="small">Player</div>
+          </header>
+          <div class="playerWrap">
+            <div class="topbar">
+              <a href="#" onclick="window.__back();return false;">Back</a>
+              <a href="#" onclick="window.__openVr('${id}');return false;">Open VR</a>
+              <span class="small">${escapeHtml(state.current?.item?.filename || '')}</span>
+            </div>
+            <video id="v" controls autoplay playsinline src="/api/media/${id}/stream"></video>
+            <div class="small" id="fs"></div>
+          </div>
+        `;
+
+        // Show if funscript exists.
+        fetch(`/api/media/${id}/funscript`).then(r => r.ok ? r.json() : null).then((j) => {
+          if (!j) return;
+          el('fs').textContent = `Funscript loaded: ${j.actions?.length ?? 0} actions`;
+        }).catch(() => {});
+      }
+
+      function renderVr() {
+        const id = state.current?.id;
+        const filename = escapeHtml(state.current?.item?.filename || '');
+        el('app').innerHTML = `
+          <header>
+            <h1>MediaViewer</h1>
+            <div class="small">VR Player</div>
+          </header>
+          <div class="playerWrap">
+            <div class="topbar">
+              <a href="#" onclick="window.__back();return false;">Back</a>
+              <a href="#" onclick="window.__openPlayer('${id}');return false;">Open Normal</a>
+              <span class="small">${filename}</span>
+            </div>
+            <div class="small">Uses WebXR via A-Frame. If you have a headset, enter VR from the button.</div>
+            <script src="https://aframe.io/releases/1.6.0/aframe.min.js"><\/script>
+            <a-scene embedded vr-mode-ui="enabled: true">
+              <a-assets>
+                <video id="vvr" crossorigin="anonymous" autoplay loop="false" playsinline webkit-playsinline src="/api/media/${id}/stream"></video>
+              </a-assets>
+              <a-plane position="0 1.6 -2" rotation="0 0 0" width="3.2" height="1.8" material="shader: flat; src: #vvr"></a-plane>
+              <a-camera position="0 1.6 0"></a-camera>
+            </a-scene>
+          </div>
+        `;
+      }
+
+      function render() {
+        if (state.view === 'grid') return renderGrid();
+        if (state.view === 'player') return renderPlayer();
+        if (state.view === 'vr') return renderVr();
+      }
+
+      window.__openPlayer = async (id) => {
+        const item = state.items.find((x) => x.id === id);
+        setView('player', { id, item });
+      };
+      window.__openVr = async (id) => {
+        const item = state.items.find((x) => x.id === id);
+        setView('vr', { id, item });
+      };
+      window.__back = async () => {
+        setView('grid', null);
+      };
+
+      (async () => {
+        await loadList();
+        render();
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>
