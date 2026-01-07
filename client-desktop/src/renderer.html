@@ -7,79 +7,121 @@
     <style>
       :root { color-scheme: dark; }
       body { margin: 0; font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; background: #0b0c0f; color: #e6e6e6; }
-      header { padding: 12px 16px; border-bottom: 1px solid #222; display: flex; gap: 12px; align-items: center; }
+      header { padding: 12px 16px; border-bottom: 1px solid #222; display: flex; gap: 12px; align-items: center; justify-content: space-between; }
       header h1 { font-size: 14px; margin: 0; }
-      .wrap { display: grid; grid-template-columns: 360px 1fr; height: calc(100vh - 50px); }
-      .left { border-right: 1px solid #222; padding: 12px; overflow: auto; }
-      .right { padding: 12px; overflow: auto; }
+      .wrap { display: grid; grid-template-columns: 380px 1fr; height: calc(100vh - 50px); }
+      .left { border-right: 1px solid #222; padding: 12px; overflow: auto; display: grid; gap: 12px; }
+      .right { padding: 12px; overflow: auto; display: grid; gap: 10px; }
       .row { display: flex; gap: 8px; align-items: center; }
       input, select { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #2a2f3a; background: #11131a; color: #e6e6e6; }
       button { padding: 10px 12px; border-radius: 8px; border: 1px solid #2a2f3a; background: #11131a; color: #e6e6e6; cursor: pointer; }
       button:disabled { opacity: 0.6; cursor: not-allowed; }
       .list { margin-top: 12px; display: grid; gap: 8px; }
-      .item { border: 1px solid #222; border-radius: 10px; padding: 10px; cursor: pointer; }
+      .item { border: 1px solid #222; border-radius: 10px; padding: 10px; cursor: pointer; background: #0f1117; }
+      .item.active { outline: 2px solid #2a2f3a; }
       .item small { opacity: 0.8; }
       video { width: 100%; max-height: 70vh; background: #000; }
       .small { font-size: 12px; opacity: 0.85; }
       .pill { display: inline-block; padding: 2px 8px; border: 1px solid #2a2f3a; border-radius: 999px; font-size: 11px; margin-left: 6px; }
       .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .card { border: 1px solid #222; border-radius: 12px; padding: 12px; background: #0f1117; }
+      .card h2 { margin: 0 0 10px 0; font-size: 12px; font-weight: 600; opacity: 0.9; }
+      .kpi { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+      .kpi .pill { margin-left: 0; }
+      .stack { display: grid; gap: 8px; }
     </style>
   </head>
   <body>
     <header>
       <h1>MediaViewer Desktop</h1>
-      <div class="small" id="status"></div>
+      <div class="kpi">
+        <span class="pill" id="wsPill">WS: —</span>
+        <span class="pill" id="serialPill">Serial: —</span>
+        <span class="pill" id="drivePill">Drive: OFF</span>
+        <span class="pill" id="fsPill">Funscript: —</span>
+      </div>
     </header>
 
     <div class="wrap">
       <div class="left">
-        <div class="grid2">
-          <div>
-            <div class="small">Server URL</div>
-            <input id="serverUrl" value="http://localhost:3000" />
+        <div class="card">
+          <h2>Server</h2>
+          <div class="stack">
+            <div>
+              <div class="small">Server URL</div>
+              <div class="row">
+                <input id="serverUrl" value="http://localhost:3000" />
+                <button id="applyServer" style="max-width: 120px;">Apply</button>
+              </div>
+            </div>
+            <div class="grid2">
+              <div>
+                <div class="small">Search</div>
+                <input id="q" placeholder="filename" />
+              </div>
+              <div>
+                <div class="small">Paging</div>
+                <div class="row">
+                  <button id="prev" style="max-width: 90px;">Prev</button>
+                  <button id="next" style="max-width: 90px;">Next</button>
+                  <div class="small" id="pageLabel" style="white-space: nowrap;"></div>
+                </div>
+              </div>
+            </div>
+            <div class="row">
+              <button id="refresh" style="max-width: 120px;">Refresh</button>
+              <div class="small" id="status"></div>
+            </div>
           </div>
-          <div>
-            <div class="small">Search</div>
-            <input id="q" placeholder="filename" />
+        </div>
+
+        <div class="card">
+          <h2>Serial</h2>
+          <div class="stack">
+            <div class="row">
+              <select id="port"></select>
+              <input id="baud" value="115200" style="max-width: 120px;" />
+            </div>
+            <div class="row">
+              <button id="ports">List Ports</button>
+              <button id="connect">Connect</button>
+              <button id="disconnect">Disconnect</button>
+            </div>
           </div>
         </div>
 
-        <div class="row" style="margin-top: 8px;">
-          <button id="refresh">Refresh</button>
-          <div class="small" id="pageLabel"></div>
+        <div class="card">
+          <h2>Funscript → TCode</h2>
+          <div class="stack">
+            <div class="row">
+              <select id="axisSelect" style="max-width: 220px;">
+                <option value="L0">L0 (primary)</option>
+                <option value="L1">L1</option>
+                <option value="L2">L2</option>
+                <option value="L3">L3</option>
+                <option value="CUSTOM">Custom…</option>
+              </select>
+              <input id="axisCustom" value="L0" style="max-width: 120px; display:none;" />
+              <button id="toggleDrive" style="max-width: 140px;">Drive: OFF</button>
+            </div>
+            <div class="small">Sends TCode lines based on the funscript actions while playing.</div>
+          </div>
         </div>
 
-        <div class="row" style="margin-top: 12px;">
-          <button id="prev">Prev</button>
-          <button id="next">Next</button>
+        <div class="card">
+          <h2>Media</h2>
+          <div class="list" id="list"></div>
         </div>
-
-        <hr style="border: none; border-top: 1px solid #222; margin: 12px 0;" />
-
-        <div class="small">Serial</div>
-        <div class="row">
-          <select id="port"></select>
-          <input id="baud" value="115200" style="max-width: 120px;" />
-        </div>
-        <div class="row" style="margin-top: 8px;">
-          <button id="ports">List Ports</button>
-          <button id="connect">Connect</button>
-          <button id="disconnect">Disconnect</button>
-        </div>
-
-        <hr style="border: none; border-top: 1px solid #222; margin: 12px 0;" />
-
-        <div class="small">Funscript → TCode</div>
-        <div class="row">
-          <input id="axis" value="L0" style="max-width: 100px;" />
-          <button id="toggleDrive">Drive: OFF</button>
-        </div>
-
-        <div class="list" id="list"></div>
       </div>
 
       <div class="right">
-        <div class="small" id="now"></div>
+        <div class="row" style="justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+          <div class="small" id="now"></div>
+          <div class="row" style="gap: 8px;">
+            <button id="btnPlayPause" style="max-width: 140px;">Play/Pause</button>
+            <button id="btnFollow" style="max-width: 220px;">Follow remote: ON</button>
+          </div>
+        </div>
         <video id="video" controls></video>
         <div class="small" id="playback"></div>
       </div>
@@ -87,7 +129,7 @@
 
     <script type="module">
       const state = {
-        serverUrl: 'http://localhost:8080',
+        serverUrl: 'http://localhost:3000',
         q: '',
         page: 1,
         pageSize: 30,
@@ -105,10 +147,16 @@
         applyingRemoteUntil: 0,
         lastSyncSentAt: 0,
         lastPlaybackPutAt: 0,
+        followRemote: true,
+        serialConnected: false,
       };
 
       const $ = (id) => document.getElementById(id);
       const statusEl = $('status');
+      const wsPill = $('wsPill');
+      const serialPill = $('serialPill');
+      const drivePill = $('drivePill');
+      const fsPill = $('fsPill');
 
       async function apiJson(path, opts) {
         const url = new URL(path, state.serverUrl);
@@ -118,6 +166,45 @@
       }
 
       function setStatus(s) { statusEl.textContent = s; }
+
+      function setWsPill(connected) {
+        wsPill.textContent = connected ? 'WS: connected' : 'WS: disconnected';
+      }
+
+      function setSerialPill(connected) {
+        serialPill.textContent = connected ? 'Serial: connected' : 'Serial: disconnected';
+      }
+
+      function setDrivePill() {
+        drivePill.textContent = state.drive ? 'Drive: ON' : 'Drive: OFF';
+      }
+
+      function setFsPill() {
+        const n = state.funscript?.actions?.length;
+        if (typeof n === 'number') fsPill.textContent = `Funscript: ${n} actions`;
+        else fsPill.textContent = 'Funscript: —';
+      }
+
+      function loadPrefs() {
+        try {
+          const p = JSON.parse(localStorage.getItem('mvDesktopPrefs') || 'null');
+          if (p && typeof p === 'object') {
+            if (typeof p.serverUrl === 'string') state.serverUrl = p.serverUrl;
+            if (typeof p.axis === 'string') state.axis = p.axis;
+            if (typeof p.drive === 'boolean') state.drive = p.drive;
+            if (typeof p.followRemote === 'boolean') state.followRemote = p.followRemote;
+          }
+        } catch {}
+      }
+
+      function savePrefs() {
+        localStorage.setItem('mvDesktopPrefs', JSON.stringify({
+          serverUrl: state.serverUrl,
+          axis: state.axis,
+          drive: state.drive,
+          followRemote: state.followRemote,
+        }));
+      }
 
       function wsUrlFromHttp(httpUrl) {
         const u = new URL(httpUrl);
@@ -136,12 +223,14 @@
         ws.addEventListener('open', () => {
           state.wsConnected = true;
           setStatus('WS connected');
+          setWsPill(true);
           ws.send(JSON.stringify({ type: 'sync:hello', clientId: state.clientId, sessionId: state.sessionId }));
         });
 
         ws.addEventListener('close', () => {
           state.wsConnected = false;
           setStatus('WS disconnected');
+          setWsPill(false);
           window.setTimeout(() => connectWs(), 1000);
         });
 
@@ -168,6 +257,7 @@
       }
 
       async function applyRemoteSyncState(remote) {
+        if (!state.followRemote) return;
         if (!remote || !remote.mediaId) return;
         if (remote.fromClientId && remote.fromClientId === state.clientId) return;
 
@@ -228,7 +318,8 @@
       function renderList() {
         $('list').innerHTML = state.items.map((it) => {
           const fs = it.hasFunscript ? `<span class='pill'>funscript</span>` : '';
-          return `<div class='item' data-id='${it.id}'>${esc(it.filename)} ${fs}<br/><small>${esc(it.mediaType)}</small></div>`;
+          const active = state.current?.id === it.id ? 'active' : '';
+          return `<div class='item ${active}' data-id='${it.id}'>${esc(it.filename)} ${fs}<br/><small>${esc(it.mediaType)}</small></div>`;
         }).join('');
         for (const div of $('list').querySelectorAll('.item')) {
           div.addEventListener('click', () => openMedia(div.getAttribute('data-id')));
@@ -254,6 +345,9 @@
         } catch {
           state.funscript = null;
         }
+
+        setFsPill();
+        renderList();
       }
 
       function currentFrame(timeSeconds, fps) {
@@ -317,6 +411,14 @@
       }
 
       $('serverUrl').addEventListener('change', (e) => { state.serverUrl = e.target.value; });
+      $('applyServer').addEventListener('click', async () => {
+        state.serverUrl = $('serverUrl').value.trim() || state.serverUrl;
+        savePrefs();
+        try { if (state.ws) state.ws.close(); } catch {}
+        connectWs();
+        state.page = 1;
+        await refresh();
+      });
       $('q').addEventListener('input', (e) => {
         state.q = e.target.value;
         state.page = 1;
@@ -336,20 +438,83 @@
       $('connect').addEventListener('click', async () => {
         await window.mv.serialConnect({ path: $('port').value, baudRate: Number($('baud').value || 115200) });
         setStatus('Serial connected');
+        state.serialConnected = true;
+        setSerialPill(true);
       });
       $('disconnect').addEventListener('click', async () => {
         await window.mv.serialDisconnect();
         setStatus('Serial disconnected');
+        state.serialConnected = false;
+        setSerialPill(false);
       });
 
-      $('axis').addEventListener('input', (e) => { state.axis = e.target.value; });
+      function setAxis(val) {
+        state.axis = String(val || 'L0').toUpperCase();
+        savePrefs();
+      }
+
+      $('axisSelect').addEventListener('change', () => {
+        const sel = $('axisSelect').value;
+        if (sel === 'CUSTOM') {
+          $('axisCustom').style.display = '';
+          $('axisCustom').focus();
+          setAxis($('axisCustom').value);
+        } else {
+          $('axisCustom').style.display = 'none';
+          $('axisCustom').value = sel;
+          setAxis(sel);
+        }
+      });
+
+      $('axisCustom').addEventListener('input', () => setAxis($('axisCustom').value));
+
       $('toggleDrive').addEventListener('click', () => {
         state.drive = !state.drive;
         $('toggleDrive').textContent = state.drive ? 'Drive: ON' : 'Drive: OFF';
+        setDrivePill();
+        savePrefs();
         state.funIndex = -1;
       });
 
-      state.serverUrl = $('serverUrl').value;
+      $('btnPlayPause').addEventListener('click', async () => {
+        const v = $('video');
+        if (!(v instanceof HTMLVideoElement)) return;
+        if (v.paused) {
+          try { await v.play(); } catch {}
+        } else {
+          try { v.pause(); } catch {}
+        }
+      });
+
+      $('btnFollow').addEventListener('click', () => {
+        state.followRemote = !state.followRemote;
+        $('btnFollow').textContent = state.followRemote ? 'Follow remote: ON' : 'Follow remote: OFF';
+        savePrefs();
+      });
+
+      loadPrefs();
+      $('serverUrl').value = state.serverUrl;
+
+      // Init axis dropdown
+      const common = ['L0','L1','L2','L3'];
+      if (common.includes(state.axis)) {
+        $('axisSelect').value = state.axis;
+        $('axisCustom').value = state.axis;
+        $('axisCustom').style.display = 'none';
+      } else {
+        $('axisSelect').value = 'CUSTOM';
+        $('axisCustom').value = state.axis;
+        $('axisCustom').style.display = '';
+      }
+
+      $('toggleDrive').textContent = state.drive ? 'Drive: ON' : 'Drive: OFF';
+      $('btnFollow').textContent = state.followRemote ? 'Follow remote: ON' : 'Follow remote: OFF';
+
+      setWsPill(false);
+      setSerialPill(false);
+      setDrivePill();
+      setFsPill();
+
       setStatus('Ready');
       connectWs();
       await listPorts();

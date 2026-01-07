@@ -13,10 +13,12 @@
         total: 0,
         items: [],
         funFilter: 'all', // all | with | without
+        vrFilter: 'all', // all | vr | nonvr
         gridMin: 180,
         sort: 'newest', // newest | lenAsc | lenDesc
         lenMinSec: 0,
         durationsSec: {},
+        thumbCache: {},
         _durToken: 0,
         view: 'grid', // grid | player | vr
         current: null,
@@ -163,6 +165,29 @@
         return `Page ${state.page} / ${maxPage} (${state.total} items)`;
       }
 
+      function thumbKey(id) {
+        return `mvThumb:${id}`;
+      }
+
+      function getThumbDataUrl(id) {
+        if (state.thumbCache[id]) return state.thumbCache[id];
+        try {
+          const v = window.sessionStorage.getItem(thumbKey(id));
+          if (v) {
+            state.thumbCache[id] = v;
+            return v;
+          }
+        } catch {}
+        return null;
+      }
+
+      function setThumbDataUrl(id, dataUrl) {
+        state.thumbCache[id] = dataUrl;
+        try {
+          window.sessionStorage.setItem(thumbKey(id), dataUrl);
+        } catch {}
+      }
+
       async function loadList() {
         const q = encodeURIComponent(state.q);
         const params = new URLSearchParams();
@@ -172,6 +197,8 @@
         params.set('mediaType', 'video');
         if (state.funFilter === 'with') params.set('hasFunscript', '1');
         if (state.funFilter === 'without') params.set('hasFunscript', '0');
+        if (state.vrFilter === 'vr') params.set('isVr', '1');
+        if (state.vrFilter === 'nonvr') params.set('isVr', '0');
 
         const data = await apiJson(`/api/media?${params.toString()}`);
         state.total = data.total;
@@ -226,24 +253,27 @@
       }
 
       function card(item) {
-        const tagF = item.hasFunscript ? `<span class="tag">funscript</span>` : `<span class="tag">no funscript</span>`;
+        const tagF = item.hasFunscript
+          ? `<span class="tag tag--good">funscript</span>`
+          : `<span class="tag tag--bad">no funscript</span>`;
         const tagT = `<span class="tag">${item.mediaType}</span>`;
 
         const durationTag = item.mediaType === 'video'
           ? `<span class="tag mvLen" data-id="${item.id}">${formatDuration(getDurationSec(item.id) ?? NaN)}</span>`
           : '';
 
+        const cachedThumb = getThumbDataUrl(item.id);
         const thumb = item.mediaType === 'image'
           ? `<img class="thumbMedia" loading="lazy" src="/api/media/${item.id}/stream" alt="${escapeHtml(item.filename)}" />`
-          : `<video class="thumbMedia mvThumbVideo" muted playsinline preload="metadata" data-src="/api/media/${item.id}/stream"></video>`;
+          : cachedThumb
+            ? `<img class="thumbMedia" loading="lazy" src="${cachedThumb}" alt="${escapeHtml(item.filename)}" />`
+            : `<video class="thumbMedia mvThumbVideo" muted playsinline preload="metadata" data-id="${item.id}" data-src="/api/media/${item.id}/stream"></video>`;
 
-        const vrBtn = item.isVr
-          ? `<button class="btn" onclick="window.__openVr('${item.id}')">VR</button>`
-          : '';
+        const openLabel = item.isVr ? 'Open (VR)' : 'Play';
 
         return `
-          <div class="card">
-            <div class="thumb" role="button" tabindex="0" onclick="window.__openPlayer('${item.id}')">
+          <div class="card" role="button" tabindex="0" data-open-id="${escapeHtml(item.id)}" aria-label="${escapeHtml(openLabel)}: ${escapeHtml(item.filename)}">
+            <div class="thumb">
               ${thumb}
               <div class="thumbOverlay">Open</div>
             </div>
@@ -251,8 +281,7 @@
               <div class="name">${escapeHtml(item.filename)}</div>
               <div class="tags">${tagT}${tagF}${durationTag}</div>
               <div class="row">
-                <button class="btn" onclick="window.__openPlayer('${item.id}')">Play</button>
-                ${vrBtn}
+                <span class="small">${escapeHtml(openLabel)}</span>
               </div>
             </div>
           </div>
@@ -287,6 +316,11 @@
               <option value="with" ${state.funFilter === 'with' ? 'selected' : ''}>With funscript</option>
               <option value="without" ${state.funFilter === 'without' ? 'selected' : ''}>Without funscript</option>
             </select>
+            <select id="vrFilter" title="VR filter">
+              <option value="all" ${state.vrFilter === 'all' ? 'selected' : ''}>All</option>
+              <option value="vr" ${state.vrFilter === 'vr' ? 'selected' : ''}>VR only</option>
+              <option value="nonvr" ${state.vrFilter === 'nonvr' ? 'selected' : ''}>Non-VR only</option>
+            </select>
             <select id="sort" title="Sort">
               <option value="newest" ${state.sort === 'newest' ? 'selected' : ''}>Newest</option>
               <option value="lenAsc" ${state.sort === 'lenAsc' ? 'selected' : ''}>Length (short → long)</option>
@@ -303,6 +337,8 @@
             <button class="btn" id="gridDec" title="Smaller grid">-</button>
             <button class="btn" id="gridInc" title="Larger grid">+</button>
             <button class="btn" id="scan">Rescan</button>
+            <button class="btn" id="deovrLib" title="Open library in DeoVR">DeoVR Library</button>
+            <button class="btn" id="hsLib" title="Open HereSphere library JSON">HereSphere Library</button>
           </header>
           <main>
             <div class="small">${formatPageLabel()}</div>
@@ -331,6 +367,13 @@
 
         el('funFilter').addEventListener('change', async (e) => {
           state.funFilter = e.target.value;
+          state.page = 1;
+          await loadList();
+          render();
+        });
+
+        el('vrFilter').addEventListener('change', async (e) => {
+          state.vrFilter = e.target.value;
           state.page = 1;
           await loadList();
           render();
@@ -367,6 +410,9 @@
           }
         });
 
+        el('deovrLib').addEventListener('click', () => window.__openDeoVrLibrary());
+        el('hsLib').addEventListener('click', () => window.__openHereSphereLibrary());
+
         const maxPage = Math.max(1, Math.ceil(state.total / state.pageSize));
         el('prev').disabled = state.page <= 1;
         el('next').disabled = state.page >= maxPage;
@@ -380,6 +426,22 @@
           await loadList();
           render();
         });
+
+        // Card click-to-open (entire card).
+        const cards = Array.from(document.querySelectorAll('.card[data-open-id]'));
+        for (const c of cards) {
+          c.addEventListener('click', () => {
+            const id = c.getAttribute('data-open-id');
+            if (id) window.__openBest(id);
+          });
+          c.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              const id = c.getAttribute('data-open-id');
+              if (id) window.__openBest(id);
+            }
+          });
+        }
 
         initVideoThumbs();
         prefetchDurationsForPage();
@@ -459,7 +521,35 @@
               } catch {}
             }, { once: true });
             v.addEventListener('seeked', () => {
-              v.pause();
+              try { v.pause(); } catch {}
+
+              const id = v.getAttribute('data-id') || '';
+              if (id && !getThumbDataUrl(id)) {
+                try {
+                  const w = Math.max(1, v.videoWidth || 0);
+                  const h = Math.max(1, v.videoHeight || 0);
+                  if (w > 1 && h > 1) {
+                    const c = document.createElement('canvas');
+                    c.width = w;
+                    c.height = h;
+                    const ctx = c.getContext('2d');
+                    if (ctx) {
+                      ctx.drawImage(v, 0, 0, w, h);
+                      const dataUrl = c.toDataURL('image/jpeg', 0.75);
+                      if (dataUrl && dataUrl.startsWith('data:image/')) {
+                        setThumbDataUrl(id, dataUrl);
+                        const img = document.createElement('img');
+                        img.className = 'thumbMedia';
+                        img.loading = 'lazy';
+                        img.alt = '';
+                        img.src = dataUrl;
+                        v.replaceWith(img);
+                      }
+                    }
+                  }
+                } catch {}
+              }
+
               const overlay = v.parentElement?.querySelector('.thumbOverlay');
               if (overlay) overlay.classList.add('hidden');
             }, { once: true });
@@ -472,7 +562,7 @@
       function renderPlayer() {
         const id = state.current?.id;
         const item = state.current?.item;
-        const vrLink = item?.isVr ? `<a href="#" onclick="window.__openVr('${id}');return false;">Open VR</a>` : '';
+        const vrLink = item?.isVr ? `<a href="#" onclick="window.__openBest('${id}');return false;">Open in VR player</a>` : '';
         el('app').innerHTML = `
           <header>
             <h1>MediaViewer</h1>
@@ -556,6 +646,54 @@
         const item = await getItemInfo(id);
         setView('vr', { id, item });
       };
+
+      function uaHas(substr) {
+        try { return navigator.userAgent.toLowerCase().includes(substr.toLowerCase()); } catch { return false; }
+      }
+
+      window.__openBest = async (id) => {
+        const item = await getItemInfo(id);
+        const isVr = Boolean(item?.isVr);
+
+        if (!isVr) {
+          await window.__openPlayer(id);
+          return;
+        }
+
+        // If we're inside HereSphere's built-in browser, navigating to the per-video JSON is the most compatible.
+        if (uaHas('heresphere')) {
+          window.location.href = `/heresphere/video/${encodeURIComponent(id)}`;
+          return;
+        }
+
+        // If we're inside DeoVR (or want to launch it), use the official deeplink scheme.
+        if (uaHas('deovr')) {
+          const url = new URL(`/deovr/video/${id}`, window.location.origin).toString();
+          window.location.href = `deovr://${url}`;
+          return;
+        }
+
+        // Default: our built-in WebXR/A-Frame view works in VR-capable browsers and still shows a usable fallback in 2D.
+        await window.__openVr(id);
+      };
+
+      window.__openDeoVrLibrary = () => {
+        const url = new URL('/deovr', window.location.origin).toString();
+        window.location.href = `deovr://${url}`;
+      };
+      window.__openDeoVrVideo = (id) => {
+        const url = new URL(`/deovr/video/${id}`, window.location.origin).toString();
+        window.location.href = `deovr://${url}`;
+      };
+      window.__openHereSphereLibrary = () => {
+        const url = new URL('/heresphere', window.location.origin).toString();
+        window.open(url, '_blank', 'noopener');
+      };
+      window.__openHereSphereVideo = (id) => {
+        const url = new URL(`/heresphere/video/${id}`, window.location.origin).toString();
+        window.open(url, '_blank', 'noopener');
+      };
+
       window.__back = async () => {
         setView('grid', null);
       };

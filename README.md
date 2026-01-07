@@ -64,6 +64,23 @@ Optional (point at a different server):
 ./run-desktop-client.ps1 -ServerUrl http://localhost:3000
 ```
 
+## DeoVR + HereSphere (VR players)
+
+The server exposes lightweight endpoints that VR players can use as a remote library.
+
+DeoVR:
+- Library endpoint: `http://<server-host>:3000/deovr`
+- Single-video endpoint (deeplink JSON): `http://<server-host>:3000/deovr/video/<mediaId>`
+- Typical deeplink format: `deovr://http://<server-host>:3000/deovr`
+
+HereSphere:
+- Library endpoint: `http://<server-host>:3000/heresphere`
+- Single-video endpoint: `http://<server-host>:3000/heresphere/video/<mediaId>`
+
+Notes:
+- The Web UI shows “DeoVR” and “HereSphere” buttons on VR-tagged videos.
+- HereSphere integration is intended for HereSphere’s built-in browser “Web Stream” flow (open the `/heresphere` URL inside HereSphere).
+
 ## Notes
 
 - Media scanning is recursive.

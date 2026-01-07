@@ -72,11 +72,19 @@ export function buildApiRouter(opts: {
     const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize ?? 48) || 48));
     const mediaType = String(req.query.mediaType ?? '').trim();
     const hasFunscriptParam = String(req.query.hasFunscript ?? '').trim();
+    const isVrParam = String(req.query.isVr ?? '').trim();
 
     const hasFunscript =
       hasFunscriptParam === '1' || hasFunscriptParam.toLowerCase() === 'true'
         ? true
         : hasFunscriptParam === '0' || hasFunscriptParam.toLowerCase() === 'false'
+          ? false
+          : null;
+
+    const isVr =
+      isVrParam === '1' || isVrParam.toLowerCase() === 'true'
+        ? true
+        : isVrParam === '0' || isVrParam.toLowerCase() === 'false'
           ? false
           : null;
 
@@ -97,6 +105,10 @@ export function buildApiRouter(opts: {
     }
     if (hasFunscript !== null) {
       whereClauses.push(`has_funscript = ${add(hasFunscript)}`);
+    }
+
+    if (isVr !== null) {
+      whereClauses.push(`is_vr = ${add(isVr)}`);
     }
 
     const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';

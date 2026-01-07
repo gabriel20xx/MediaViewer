@@ -26,15 +26,23 @@ async function* walk(dir: string): AsyncGenerator<string> {
 }
 
 function isVrFromRelPath(relPath: string): boolean {
-  const s = relPath.toLowerCase();
+  const s = relPath.toLowerCase().replace(/\\/g, '/');
+
+  // Folder hint.
   if (s.includes('/vr/')) return true;
-  // Common VR hints in filenames.
-  if (s.includes(' sbs ') || s.includes(' tb ')) return true;
-  if (s.includes('sbs') || s.includes('tb')) return true;
-  if (s.includes('180') || s.includes('360')) return true;
-  // crude word-boundary-ish match for "vr"
-  const normalized = s.replace(/[^a-z0-9]+/g, ' ');
-  if (normalized.includes(' vr ')) return true;
+
+  // Token-based matching to support conventions like "_LR_180".
+  const hasToken = (re: RegExp) => re.test(s);
+
+  const hasVrWord = hasToken(/(^|[\/\s._-])vr([\/\s._-]|$)/);
+  const hasStereo = hasToken(/(^|[\/\s._-])(lr|rl|sbs|3dh|tb|bt|ou|overunder|3dv)([\/\s._-]|$)/);
+  const hasFov =
+    hasToken(/(^|[\/\s._-])(180|360)([\/\s._-]|$)/) || s.includes('vr180') || s.includes('vr360');
+
+  // Heuristic: VR videos almost always have an FOV token, and frequently stereo.
+  // Require a reasonably strong signal to avoid false positives.
+  if (hasFov && (hasStereo || hasVrWord)) return true;
+  if (hasStereo && hasVrWord) return true;
   return false;
 }
 

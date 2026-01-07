@@ -9,6 +9,7 @@ import { buildApiRouter } from './api.js';
 import { upsertMediaFromDisk } from './mediaScanner.js';
 import { createDb, ensureSchema } from './db.js';
 import { getSyncPlaybackState, upsertSyncPlaybackState } from './syncState.js';
+import { registerVrIntegrations } from './vrIntegrations.js';
 
 const env = readEnv();
 const db = createDb(env.DATABASE_URL);
@@ -20,6 +21,9 @@ if (env.CORS_ORIGIN) {
 }
 
 app.use('/api', buildApiRouter({ db, mediaRoot: env.MEDIA_ROOT }));
+
+// VR player integrations (root endpoints expected by apps)
+registerVrIntegrations(app, db);
 
 // Serve Web UI (static files built into /public)
 const publicDir = path.join(process.cwd(), 'public');
