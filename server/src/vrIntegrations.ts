@@ -111,6 +111,17 @@ export function registerVrIntegrations(
   // --- DeoVR integration ---
   // DeoVR will request /deovr for a “Selection Scene” style listing.
   app.all(['/deovr', '/deovr/'], async (req, res) => {
+    // If accessed by a regular browser, show a helper page instead of raw JSON
+    const ua = req.get('User-Agent') || '';
+    if (!ua.toLowerCase().includes('deovr')) {
+      return res.send(`<html><body style="background:#111;color:#fff;font-family:sans-serif;padding:2em;">
+        <h3>DeoVR Integration</h3>
+        <p>This endpoint is intended for the <b>DeoVR</b> VR browser.</p>
+        <p>It provides a JSON feed of VR videos.</p>
+        <p><a href="/" style="color:#4af">Return to Web UI</a></p>
+      </body></html>`);
+    }
+
     const base = baseUrl(req);
     const vids = await listVrVideos(db, 1000);
 

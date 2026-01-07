@@ -265,6 +265,9 @@
         items: [],
         durationsSec: {},
         _durToken: 0,
+        seenSources: new Map(),
+        clientsMetadata: new Map(),
+        sourceStates: new Map(),
         current: null,
         funscript: null,
         funIndex: -1,
@@ -507,10 +510,14 @@
         // Check if we have metadata for this client
         const meta = state.clientsMetadata.get(id);
         if (meta) {
-          const browser = parseBrowserFromUserAgent(meta.userAgent);
-          // Strip ::ffff: prefix from IP
+          // User requested full browser agent.
+          let ua = meta.userAgent || 'Unknown';
+          // Clean up common prefix if safe
+          if (ua.startsWith('Mozilla/5.0')) {
+             ua = ua.replace(/^Mozilla\/5\.0 /, '');
+          }
           const ip = (meta.ipAddress || '').replace(/^::ffff:/, '');
-          return `${browser} (${ip})`;
+          return `${ua} (${ip})`;
         }
         
         // Fallbacks
@@ -650,6 +657,8 @@
           const src = String(msg.state.fromClientId || '');
           if (src && src !== state.clientId) {
             state.seenSources.set(src, Date.now());
+            // Cache state for this source for instant switching
+            state.sourceStates.set(src, msg.state);
             updateFollowSourceOptions();
             
             // Log VR sync events for debugging
@@ -833,11 +842,11 @@
           const dur = formatDuration(getDurationSec(it.id) ?? NaN);
           const durTag = dur !== '--:--' ? `<span class='pill' style='background:#374151;color:#d1d5db;'>${dur}</span>` : '';
           return `<div class='item ${active}' data-id='${it.id}'>
-            <div style="display:flex; justify-content:space-between;">
-              <span>${esc(it.filename)}</span>
-              <span>${durTag} ${vr} ${fs}</span>
+            <div style="font-weight:500; margin-bottom:4px; word-break:break-all;">${esc(it.filename)}</div>
+            <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
+              <span style="opacity:0.7; font-size:0.85em;">${esc(it.mediaType)}</span>
+              ${durTag} ${vr} ${fs}
             </div>
-            <small style="opacity:0.7;">${esc(it.mediaType)}</small>
           </div>`;
         }).join('');
         const items = $('list').querySelectorAll('.item');
@@ -1404,8 +1413,28 @@
       });
 
       $('followSource').addEventListener('change', () => {
-        state.followSource = String($('followSource').value || 'any');
+        const val = String($('followSource').value || '');
+        state.followSource = val;
         savePrefs();
+
+        // If changed to None, unload immediately.
+        if (!val) {
+          applyRemoteSyncState({ mediaId: null }); // Passing null mediaId triggers unload
+          logToConsole('log', 'Follow source set to None - unloading media');
+          return;
+        }
+
+        // If changed to a specific source, check if we have cached state.
+        const cached = state.sourceStates.get(val);
+        if (cached) {
+          logToConsole('log', `Follow source changed to ${val} - applying cached state`);
+          // Force apply even if it looks old, because we just switched to it.
+          // But applyRemoteSyncState checks if remote.fromClientId matches state.followSource,
+          // which we just updated.
+          applyRemoteSyncState(cached);
+        } else {
+             logToConsole('log', `Follow source changed to ${val} - waiting for next update`);
+        }
       });
 
       loadPrefs();

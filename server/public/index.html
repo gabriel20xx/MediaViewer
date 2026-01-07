@@ -141,11 +141,11 @@
         });
       }
 
-      function sendSyncUpdate(update) {
+      function sendSyncUpdate(update, force) {
         if (!state.wsConnected || !state.ws || state.ws.readyState !== 1) return;
         if (Date.now() < state._applyingRemoteUntil) return;
         const now = Date.now();
-        if (now - state._lastSentAt < 200) return;
+        if (!force && now - state._lastSentAt < 200) return;
         state._lastSentAt = now;
 
         state.ws.send(JSON.stringify({
@@ -185,12 +185,17 @@
         // If different media, follow it.
         if (state.current?.id !== id || state.view === 'grid') {
           state._applyingRemoteUntil = Date.now() + 800;
-          setView('player', { id, item });
+          if (item?.isVr) {
+            // For integrated WebVR support.
+            setView('vr', { id, item });
+          } else {
+            setView('player', { id, item });
+          }
           // Wait a tick for DOM.
           await new Promise((r) => setTimeout(r, 0));
         }
 
-        const v = document.getElementById('v');
+        const v = document.getElementById('v') || document.getElementById('vvr');
         if (!(v instanceof HTMLVideoElement)) return;
 
         state._applyingRemoteUntil = Date.now() + 800;
@@ -719,11 +724,12 @@
         const fps = 30;
         const mediaId = id;
 
-        const push = () => {
+        const push = (e) => {
           if (!(v instanceof HTMLVideoElement)) return;
           const timeMs = Math.round((v.currentTime || 0) * 1000);
           const frame = Math.max(0, Math.floor((v.currentTime || 0) * fps));
-          sendSyncUpdate({ mediaId, timeMs, paused: v.paused, fps, frame });
+          const force = e && (e.type === 'play' || e.type === 'pause' || e.type === 'seeked');
+          sendSyncUpdate({ mediaId, timeMs, paused: v.paused, fps, frame }, force);
         };
 
         if (v instanceof HTMLVideoElement) {
@@ -771,11 +777,12 @@
         const fps = 30;
         const mediaId = id;
 
-        const push = () => {
+        const push = (e) => {
           if (!(vvr instanceof HTMLVideoElement)) return;
           const timeMs = Math.round((vvr.currentTime || 0) * 1000);
           const frame = Math.max(0, Math.floor((vvr.currentTime || 0) * fps));
-          sendSyncUpdate({ mediaId, timeMs, paused: vvr.paused, fps, frame });
+          const force = e && (e.type === 'play' || e.type === 'pause' || e.type === 'seeked');
+          sendSyncUpdate({ mediaId, timeMs, paused: vvr.paused, fps, frame }, force);
         };
 
         if (vvr instanceof HTMLVideoElement) {
@@ -821,10 +828,9 @@
           return;
         }
 
-        // If we're inside DeoVR (or want to launch it), use the official deeplink scheme.
+        // If we're inside DeoVR, navigate directly to JSON. The browser will handle it.
         if (uaHas('deovr')) {
-          const url = new URL(`/deovr/video/${id}`, window.location.origin).toString();
-          window.location.href = `deovr://${url}`;
+          window.location.href = `/deovr/video/${id}`;
           return;
         }
 
