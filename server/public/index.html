@@ -16,11 +16,9 @@
         vrFilter: 'all', // all | vr | nonvr
         gridMin: 180,
         sort: 'newest',
-        lenMinSec: 0,
-        lenMaxSec: 0,
-        speedMin: null,
-        speedMax: null,
-        minHeight: 0,
+        lengthBucket: '', // '' | veryShort | short | medium | long | veryLong
+        speedBucket: '', // '' | verySlow | slow | medium | fast | veryFast
+        resolutionBucket: '', // '' | veryLow | low | medium | high | veryHigh
         // Scheduled play is opt-in; leaving it enabled by default breaks normal click-to-play
         // because the delayed play isn't considered a user gesture in many browsers.
         scheduledPlaySpec: '',
@@ -101,11 +99,84 @@
               state.gridMin = prefs.gridMin;
             }
             if (typeof prefs.sort === 'string') state.sort = prefs.sort;
-            if (typeof prefs.lenMinSec === 'number') state.lenMinSec = prefs.lenMinSec;
-            if (typeof prefs.lenMaxSec === 'number') state.lenMaxSec = prefs.lenMaxSec;
-            if (typeof prefs.speedMin === 'number') state.speedMin = prefs.speedMin;
-            if (typeof prefs.speedMax === 'number') state.speedMax = prefs.speedMax;
-            if (typeof prefs.minHeight === 'number') state.minHeight = prefs.minHeight;
+
+            const isBucket = (v) => typeof v === 'string' && v.length > 0;
+
+            // New bucketed filter UX.
+            if (isBucket(prefs.lengthBucket)) state.lengthBucket = prefs.lengthBucket;
+            if (isBucket(prefs.speedBucket)) state.speedBucket = prefs.speedBucket;
+            if (isBucket(prefs.resolutionBucket)) state.resolutionBucket = prefs.resolutionBucket;
+
+            // Migrate legacy min/max filters into bucket selections (best-effort).
+            if (!state.lengthBucket) {
+              const min = (typeof prefs.lenMinSec === 'number' && Number.isFinite(prefs.lenMinSec)) ? prefs.lenMinSec : 0;
+              const max = (typeof prefs.lenMaxSec === 'number' && Number.isFinite(prefs.lenMaxSec)) ? prefs.lenMaxSec : 0;
+              const guessFromMin = (m) => {
+                if (m >= 1800) return 'veryLong';
+                if (m >= 900) return 'long';
+                if (m >= 300) return 'medium';
+                if (m >= 120) return 'short';
+                return 'veryShort';
+              };
+              const guessFromMax = (m) => {
+                if (m <= 120) return 'veryShort';
+                if (m <= 300) return 'short';
+                if (m <= 900) return 'medium';
+                if (m <= 1800) return 'long';
+                return 'veryLong';
+              };
+              if (min > 0 && max > 0) {
+                if (min >= 0 && max <= 120) state.lengthBucket = 'veryShort';
+                else if (min >= 120 && max <= 300) state.lengthBucket = 'short';
+                else if (min >= 300 && max <= 900) state.lengthBucket = 'medium';
+                else if (min >= 900 && max <= 1800) state.lengthBucket = 'long';
+                else if (min >= 1800) state.lengthBucket = 'veryLong';
+              } else if (min > 0) {
+                state.lengthBucket = guessFromMin(min);
+              } else if (max > 0) {
+                state.lengthBucket = guessFromMax(max);
+              }
+            }
+
+            if (!state.speedBucket) {
+              const min = (typeof prefs.speedMin === 'number' && Number.isFinite(prefs.speedMin)) ? prefs.speedMin : null;
+              const max = (typeof prefs.speedMax === 'number' && Number.isFinite(prefs.speedMax)) ? prefs.speedMax : null;
+              const guessFromMin = (m) => {
+                if (m >= 10) return 'veryFast';
+                if (m >= 5) return 'fast';
+                if (m >= 2) return 'medium';
+                if (m >= 1) return 'slow';
+                return 'verySlow';
+              };
+              const guessFromMax = (m) => {
+                if (m <= 1) return 'verySlow';
+                if (m <= 2) return 'slow';
+                if (m <= 5) return 'medium';
+                if (m <= 10) return 'fast';
+                return 'veryFast';
+              };
+              if (typeof min === 'number' && typeof max === 'number') {
+                if (min >= 0 && max <= 1) state.speedBucket = 'verySlow';
+                else if (min >= 1 && max <= 2) state.speedBucket = 'slow';
+                else if (min >= 2 && max <= 5) state.speedBucket = 'medium';
+                else if (min >= 5 && max <= 10) state.speedBucket = 'fast';
+                else if (min >= 10) state.speedBucket = 'veryFast';
+              } else if (typeof min === 'number') {
+                state.speedBucket = guessFromMin(min);
+              } else if (typeof max === 'number') {
+                state.speedBucket = guessFromMax(max);
+              }
+            }
+
+            if (!state.resolutionBucket) {
+              const h = (typeof prefs.minHeight === 'number' && Number.isFinite(prefs.minHeight)) ? prefs.minHeight : 0;
+              if (h >= 2160) state.resolutionBucket = 'veryHigh';
+              else if (h >= 1440) state.resolutionBucket = 'high';
+              else if (h >= 1080) state.resolutionBucket = 'medium';
+              else if (h >= 720) state.resolutionBucket = 'low';
+              else if (h >= 480) state.resolutionBucket = 'veryLow';
+            }
+
             if (typeof prefs.scheduledPlaySpec === 'string') {
               const s = String(prefs.scheduledPlaySpec || '').trim();
               // Migrate legacy default that caused click-to-play to immediately pause.
@@ -123,15 +194,47 @@
             pageSize: state.pageSize,
             gridMin: state.gridMin,
             sort: state.sort,
-            lenMinSec: state.lenMinSec,
-            lenMaxSec: state.lenMaxSec,
-            speedMin: state.speedMin,
-            speedMax: state.speedMax,
-            minHeight: state.minHeight,
+            lengthBucket: state.lengthBucket,
+            speedBucket: state.speedBucket,
+            resolutionBucket: state.resolutionBucket,
             scheduledPlaySpec: String(state.scheduledPlaySpec || '').trim(),
           }));
         } catch {
           // ignore storage errors
+        }
+      }
+
+      function lengthBucketToRangeSec(bucket) {
+        switch (String(bucket || '')) {
+          case 'veryShort': return { min: 0, max: 120 };
+          case 'short': return { min: 120, max: 300 };
+          case 'medium': return { min: 300, max: 900 };
+          case 'long': return { min: 900, max: 1800 };
+          case 'veryLong': return { min: 1800, max: null };
+          default: return { min: null, max: null };
+        }
+      }
+
+      function speedBucketToRange(bucket) {
+        switch (String(bucket || '')) {
+          case 'verySlow': return { min: 0, max: 1 };
+          case 'slow': return { min: 1, max: 2 };
+          case 'medium': return { min: 2, max: 5 };
+          case 'fast': return { min: 5, max: 10 };
+          case 'veryFast': return { min: 10, max: null };
+          default: return { min: null, max: null };
+        }
+      }
+
+      function resolutionBucketToMinDims(bucket) {
+        // Use minHeight/minWidth as a proxy for resolution buckets.
+        switch (String(bucket || '')) {
+          case 'veryLow': return { minHeight: 480, minWidth: 854 };
+          case 'low': return { minHeight: 720, minWidth: 1280 };
+          case 'medium': return { minHeight: 1080, minWidth: 1920 };
+          case 'high': return { minHeight: 1440, minWidth: 2560 };
+          case 'veryHigh': return { minHeight: 2160, minWidth: 3840 };
+          default: return { minHeight: null, minWidth: null };
         }
       }
 
@@ -430,12 +533,21 @@
         if (state.vrFilter === 'vr') params.set('isVr', '1');
         if (state.vrFilter === 'nonvr') params.set('isVr', '0');
 
-        if (Number.isFinite(state.lenMinSec) && state.lenMinSec > 0) params.set('minDurationSec', String(state.lenMinSec));
-        if (Number.isFinite(state.lenMaxSec) && state.lenMaxSec > 0) params.set('maxDurationSec', String(state.lenMaxSec));
+        const lenRange = lengthBucketToRangeSec(state.lengthBucket);
+        if (typeof lenRange.min === 'number' && Number.isFinite(lenRange.min) && lenRange.min > 0) {
+          params.set('minDurationSec', String(lenRange.min));
+        }
+        if (typeof lenRange.max === 'number' && Number.isFinite(lenRange.max) && lenRange.max > 0) {
+          params.set('maxDurationSec', String(lenRange.max));
+        }
 
-        if (typeof state.speedMin === 'number' && Number.isFinite(state.speedMin)) params.set('minSpeed', String(state.speedMin));
-        if (typeof state.speedMax === 'number' && Number.isFinite(state.speedMax)) params.set('maxSpeed', String(state.speedMax));
-        if (Number.isFinite(state.minHeight) && state.minHeight > 0) params.set('minHeight', String(state.minHeight));
+        const speedRange = speedBucketToRange(state.speedBucket);
+        if (typeof speedRange.min === 'number' && Number.isFinite(speedRange.min)) params.set('minSpeed', String(speedRange.min));
+        if (typeof speedRange.max === 'number' && Number.isFinite(speedRange.max)) params.set('maxSpeed', String(speedRange.max));
+
+        const dims = resolutionBucketToMinDims(state.resolutionBucket);
+        if (typeof dims.minHeight === 'number' && Number.isFinite(dims.minHeight) && dims.minHeight > 0) params.set('minHeight', String(dims.minHeight));
+        if (typeof dims.minWidth === 'number' && Number.isFinite(dims.minWidth) && dims.minWidth > 0) params.set('minWidth', String(dims.minWidth));
 
         const sort = String(state.sort || 'newest');
         const setSort = (sortBy, sortDir) => {
@@ -678,44 +790,29 @@
               <option value="resAsc" ${state.sort === 'resAsc' ? 'selected' : ''}>Resolution (low → high)</option>
               <option value="resDesc" ${state.sort === 'resDesc' ? 'selected' : ''}>Resolution (high → low)</option>
             </select>
-            <select id="lenMin" title="Minimum length">
-              <option value="0" ${state.lenMinSec === 0 ? 'selected' : ''}>Any length</option>
-              <option value="120" ${state.lenMinSec === 120 ? 'selected' : ''}>>= 2 min</option>
-              <option value="300" ${state.lenMinSec === 300 ? 'selected' : ''}>>= 5 min</option>
-              <option value="600" ${state.lenMinSec === 600 ? 'selected' : ''}>>= 10 min</option>
-              <option value="1200" ${state.lenMinSec === 1200 ? 'selected' : ''}>>= 20 min</option>
-              <option value="1800" ${state.lenMinSec === 1800 ? 'selected' : ''}>>= 30 min</option>
+            <select id="lengthBucket" title="Length">
+              <option value="" ${state.lengthBucket === '' ? 'selected' : ''}>Any length</option>
+              <option value="veryShort" ${state.lengthBucket === 'veryShort' ? 'selected' : ''}>Very Short</option>
+              <option value="short" ${state.lengthBucket === 'short' ? 'selected' : ''}>Short</option>
+              <option value="medium" ${state.lengthBucket === 'medium' ? 'selected' : ''}>Medium</option>
+              <option value="long" ${state.lengthBucket === 'long' ? 'selected' : ''}>Long</option>
+              <option value="veryLong" ${state.lengthBucket === 'veryLong' ? 'selected' : ''}>Very Long</option>
             </select>
-            <select id="lenMax" title="Maximum length">
-              <option value="0" ${state.lenMaxSec === 0 ? 'selected' : ''}>Any max</option>
-              <option value="120" ${state.lenMaxSec === 120 ? 'selected' : ''}>&lt;= 2 min</option>
-              <option value="300" ${state.lenMaxSec === 300 ? 'selected' : ''}>&lt;= 5 min</option>
-              <option value="600" ${state.lenMaxSec === 600 ? 'selected' : ''}>&lt;= 10 min</option>
-              <option value="1200" ${state.lenMaxSec === 1200 ? 'selected' : ''}>&lt;= 20 min</option>
-              <option value="1800" ${state.lenMaxSec === 1800 ? 'selected' : ''}>&lt;= 30 min</option>
-              <option value="3600" ${state.lenMaxSec === 3600 ? 'selected' : ''}>&lt;= 60 min</option>
+            <select id="speedBucket" title="Speed">
+              <option value="" ${state.speedBucket === '' ? 'selected' : ''}>Any speed</option>
+              <option value="verySlow" ${state.speedBucket === 'verySlow' ? 'selected' : ''}>Very Slow</option>
+              <option value="slow" ${state.speedBucket === 'slow' ? 'selected' : ''}>Slow</option>
+              <option value="medium" ${state.speedBucket === 'medium' ? 'selected' : ''}>Medium</option>
+              <option value="fast" ${state.speedBucket === 'fast' ? 'selected' : ''}>Fast</option>
+              <option value="veryFast" ${state.speedBucket === 'veryFast' ? 'selected' : ''}>Very Fast</option>
             </select>
-            <select id="speedMin" title="Minimum funscript speed">
-              <option value="" ${state.speedMin === null ? 'selected' : ''}>Any speed</option>
-              <option value="1" ${state.speedMin === 1 ? 'selected' : ''}>>= 1%/s</option>
-              <option value="2" ${state.speedMin === 2 ? 'selected' : ''}>>= 2%/s</option>
-              <option value="5" ${state.speedMin === 5 ? 'selected' : ''}>>= 5%/s</option>
-              <option value="10" ${state.speedMin === 10 ? 'selected' : ''}>>= 10%/s</option>
-            </select>
-            <select id="speedMax" title="Maximum funscript speed">
-              <option value="" ${state.speedMax === null ? 'selected' : ''}>Any max</option>
-              <option value="1" ${state.speedMax === 1 ? 'selected' : ''}>&lt;= 1%/s</option>
-              <option value="2" ${state.speedMax === 2 ? 'selected' : ''}>&lt;= 2%/s</option>
-              <option value="5" ${state.speedMax === 5 ? 'selected' : ''}>&lt;= 5%/s</option>
-              <option value="10" ${state.speedMax === 10 ? 'selected' : ''}>&lt;= 10%/s</option>
-              <option value="20" ${state.speedMax === 20 ? 'selected' : ''}>&lt;= 20%/s</option>
-            </select>
-            <select id="minHeight" title="Minimum resolution height">
-              <option value="0" ${state.minHeight === 0 ? 'selected' : ''}>Any res</option>
-              <option value="720" ${state.minHeight === 720 ? 'selected' : ''}>= 720p</option>
-              <option value="1080" ${state.minHeight === 1080 ? 'selected' : ''}>= 1080p</option>
-              <option value="1440" ${state.minHeight === 1440 ? 'selected' : ''}>= 1440p</option>
-              <option value="2160" ${state.minHeight === 2160 ? 'selected' : ''}>= 2160p</option>
+            <select id="resolutionBucket" title="Resolution">
+              <option value="" ${state.resolutionBucket === '' ? 'selected' : ''}>Any res</option>
+              <option value="veryLow" ${state.resolutionBucket === 'veryLow' ? 'selected' : ''}>Very Low</option>
+              <option value="low" ${state.resolutionBucket === 'low' ? 'selected' : ''}>Low</option>
+              <option value="medium" ${state.resolutionBucket === 'medium' ? 'selected' : ''}>Medium</option>
+              <option value="high" ${state.resolutionBucket === 'high' ? 'selected' : ''}>High</option>
+              <option value="veryHigh" ${state.resolutionBucket === 'veryHigh' ? 'selected' : ''}>Very High</option>
             </select>
             <button class="btn" id="gridDec" title="Smaller grid">-</button>
             <button class="btn" id="gridInc" title="Larger grid">+</button>
@@ -777,44 +874,24 @@
           render();
         });
 
-        el('lenMin').addEventListener('change', async (e) => {
-          state.lenMinSec = Number(e.target.value) || 0;
+        el('lengthBucket').addEventListener('change', async (e) => {
+          state.lengthBucket = String(e.target.value || '');
           state.page = 1;
           savePrefs();
           await loadList();
           render();
         });
 
-        el('lenMax').addEventListener('change', async (e) => {
-          state.lenMaxSec = Number(e.target.value) || 0;
+        el('speedBucket').addEventListener('change', async (e) => {
+          state.speedBucket = String(e.target.value || '');
           state.page = 1;
           savePrefs();
           await loadList();
           render();
         });
 
-        el('speedMin').addEventListener('change', async (e) => {
-          const v = String(e.target.value || '').trim();
-          state.speedMin = v ? Number(v) : null;
-          if (typeof state.speedMin === 'number' && !Number.isFinite(state.speedMin)) state.speedMin = null;
-          state.page = 1;
-          savePrefs();
-          await loadList();
-          render();
-        });
-
-        el('speedMax').addEventListener('change', async (e) => {
-          const v = String(e.target.value || '').trim();
-          state.speedMax = v ? Number(v) : null;
-          if (typeof state.speedMax === 'number' && !Number.isFinite(state.speedMax)) state.speedMax = null;
-          state.page = 1;
-          savePrefs();
-          await loadList();
-          render();
-        });
-
-        el('minHeight').addEventListener('change', async (e) => {
-          state.minHeight = Number(e.target.value) || 0;
+        el('resolutionBucket').addEventListener('change', async (e) => {
+          state.resolutionBucket = String(e.target.value || '');
           state.page = 1;
           savePrefs();
           await loadList();
