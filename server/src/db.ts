@@ -33,28 +33,6 @@ export async function ensureSchema(db: Db): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
-
-    CREATE TABLE IF NOT EXISTS playback_states (
-      id TEXT PRIMARY KEY,
-      client_id TEXT NOT NULL,
-      media_id TEXT NOT NULL REFERENCES media_items(id) ON DELETE CASCADE,
-      time_ms INTEGER NOT NULL,
-      fps INTEGER NOT NULL DEFAULT 30,
-      frame INTEGER NOT NULL,
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      UNIQUE (client_id, media_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS sync_playback_state (
-      session_id TEXT PRIMARY KEY,
-      media_id TEXT,
-      time_ms INTEGER NOT NULL DEFAULT 0,
-      paused BOOLEAN NOT NULL DEFAULT TRUE,
-      fps INTEGER NOT NULL DEFAULT 30,
-      frame INTEGER NOT NULL DEFAULT 0,
-      from_client_id TEXT NOT NULL DEFAULT '',
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-    );
   `);
 
   await db.pool.query(`

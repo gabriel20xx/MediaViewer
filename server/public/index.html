@@ -1763,6 +1763,8 @@
         const fps = 30;
         const mediaId = id;
 
+        let wasPlayingBeforeSeek = false;
+
         const push = (e) => {
           if (!(v instanceof HTMLVideoElement)) return;
           if (isLocalVideoEventSuppressed()) return;
@@ -1772,12 +1774,29 @@
 
           // Coordinated seek: if a desktop client is connected and we seek while playing,
           // pause and resync so both ends buffer the new segment before starting together.
-          if (e && e.type === 'seeked' && !v.paused) {
+          if (e && e.type === 'seeked') {
             const desktopId = getFirstDesktopClientId();
-            if (desktopId) {
+            if (desktopId && wasPlayingBeforeSeek) {
+              wasPlayingBeforeSeek = false;
               startSeekSyncAsLeader(v, mediaId, timeMs).catch(() => {});
               return;
             }
+
+            // Some browsers will temporarily pause during a seek into an unbuffered region.
+            // If the user was playing before the seek, try to resume once data is available.
+            if (wasPlayingBeforeSeek && v.paused) {
+              try { v.play(); } catch {}
+              const startedAt = Date.now();
+              const onCanPlay = () => {
+                if (isLocalVideoEventSuppressed()) return;
+                if (Date.now() - startedAt > 8000) return;
+                if (v.paused) {
+                  try { v.play(); } catch {}
+                }
+              };
+              try { v.addEventListener('canplay', onCanPlay, { once: true }); } catch {}
+            }
+            wasPlayingBeforeSeek = false;
           }
 
           // Optional scheduled play: only send playAt when configured.
@@ -1801,6 +1820,11 @@
         };
 
         if (v instanceof HTMLVideoElement) {
+          v.addEventListener('seeking', () => {
+            if (isLocalVideoEventSuppressed()) return;
+            // Capture play intent at the start of the seek.
+            wasPlayingBeforeSeek = !v.paused && !v.ended;
+          });
           v.addEventListener('play', push);
           v.addEventListener('pause', push);
           v.addEventListener('seeked', push);
@@ -1954,6 +1978,8 @@
         const fps = 30;
         const mediaId = id;
 
+        let wasPlayingBeforeSeek = false;
+
         const push = (e) => {
           if (!(vvr instanceof HTMLVideoElement)) return;
           if (isLocalVideoEventSuppressed()) return;
@@ -1961,12 +1987,27 @@
           const frame = Math.max(0, Math.floor((vvr.currentTime || 0) * fps));
           const force = e && (e.type === 'play' || e.type === 'pause' || e.type === 'seeked');
 
-          if (e && e.type === 'seeked' && !vvr.paused) {
+          if (e && e.type === 'seeked') {
             const desktopId = getFirstDesktopClientId();
-            if (desktopId) {
+            if (desktopId && wasPlayingBeforeSeek) {
+              wasPlayingBeforeSeek = false;
               startSeekSyncAsLeader(vvr, mediaId, timeMs).catch(() => {});
               return;
             }
+
+            if (wasPlayingBeforeSeek && vvr.paused) {
+              try { vvr.play(); } catch {}
+              const startedAt = Date.now();
+              const onCanPlay = () => {
+                if (isLocalVideoEventSuppressed()) return;
+                if (Date.now() - startedAt > 8000) return;
+                if (vvr.paused) {
+                  try { vvr.play(); } catch {}
+                }
+              };
+              try { vvr.addEventListener('canplay', onCanPlay, { once: true }); } catch {}
+            }
+            wasPlayingBeforeSeek = false;
           }
 
           if (force && e && e.type === 'play') {
@@ -1989,6 +2030,10 @@
         };
 
         if (vvr instanceof HTMLVideoElement) {
+          vvr.addEventListener('seeking', () => {
+            if (isLocalVideoEventSuppressed()) return;
+            wasPlayingBeforeSeek = !vvr.paused && !vvr.ended;
+          });
           vvr.addEventListener('play', push);
           vvr.addEventListener('pause', push);
           vvr.addEventListener('seeked', push);

@@ -5,8 +5,7 @@ import mime from 'mime-types';
 import { upsertMediaFromDisk } from './mediaScanner.js';
 import { loadFunscriptIfExists } from './funscript.js';
 import type { Db } from './db.js';
-import { newId } from './ids.js';
-import { getSyncPlaybackState, upsertSyncPlaybackState } from './syncState.js';
+import { getPlaybackState, getSyncPlaybackState, upsertPlaybackState, upsertSyncPlaybackState } from './runtimeState.js';
 import { probeDurationMsWithFfprobe } from './ffprobe.js';
 
 import { generateThumbnail, CACHE_DIR } from './thumbnails/generator.js';
@@ -69,7 +68,7 @@ export function buildApiRouter(opts: {
 
   router.get('/sync', async (req, res) => {
     const sessionId = String(req.query.sessionId ?? 'default').trim() || 'default';
-    const state = await getSyncPlaybackState(db, sessionId);
+    const state = getSyncPlaybackState(sessionId);
     res.json(state);
   });
 
@@ -96,7 +95,7 @@ export function buildApiRouter(opts: {
     const fps = typeof body.fps === 'number' && Number.isFinite(body.fps) ? body.fps : 30;
     const frame = typeof body.frame === 'number' && Number.isFinite(body.frame) ? body.frame : 0;
 
-    const saved = await upsertSyncPlaybackState(db, {
+    const saved = upsertSyncPlaybackState({
       sessionId,
       mediaId,
       timeMs,
@@ -355,30 +354,22 @@ export function buildApiRouter(opts: {
     const timeMs = Math.max(0, Math.round(body.timeMs));
     const frame = Math.max(0, Math.round(body.frame));
 
-    const savedRes = await db.pool.query(
-      `
-        INSERT INTO playback_states (id, client_id, media_id, time_ms, fps, frame, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, now())
-        ON CONFLICT (client_id, media_id)
-        DO UPDATE SET
-          time_ms = EXCLUDED.time_ms,
-          fps = EXCLUDED.fps,
-          frame = EXCLUDED.frame,
-          updated_at = now()
-        RETURNING id, client_id, media_id, time_ms, fps, frame, updated_at
-      `,
-      [newId(), body.clientId, body.mediaId, timeMs, fps, frame]
-    );
-    const saved = savedRes.rows[0];
+    const saved = upsertPlaybackState({
+      clientId: body.clientId,
+      mediaId: body.mediaId,
+      timeMs,
+      fps,
+      frame,
+    });
 
     res.json({
       id: saved.id,
-      clientId: saved.client_id,
-      mediaId: saved.media_id,
-      timeMs: saved.time_ms,
+      clientId: saved.clientId,
+      mediaId: saved.mediaId,
+      timeMs: saved.timeMs,
       fps: saved.fps,
       frame: saved.frame,
-      updatedAt: saved.updated_at,
+      updatedAt: saved.updatedAt,
     });
   });
 
@@ -387,22 +378,17 @@ export function buildApiRouter(opts: {
     const mediaId = String(req.query.mediaId ?? '').trim();
     if (!clientId || !mediaId) return res.status(400).json({ error: 'clientId and mediaId required' });
 
-    const rowRes = await db.pool.query(
-      `SELECT id, client_id, media_id, time_ms, fps, frame, updated_at FROM playback_states WHERE client_id=$1 AND media_id=$2 LIMIT 1`,
-      [clientId, mediaId]
-    );
-    const row = rowRes.rows[0];
-
+    const row = getPlaybackState({ clientId, mediaId });
     if (!row) return res.status(404).json({ error: 'Not found' });
 
     res.json({
       id: row.id,
-      clientId: row.client_id,
-      mediaId: row.media_id,
-      timeMs: row.time_ms,
+      clientId: row.clientId,
+      mediaId: row.mediaId,
+      timeMs: row.timeMs,
       fps: row.fps,
       frame: row.frame,
-      updatedAt: row.updated_at,
+      updatedAt: row.updatedAt,
     });
   });
 

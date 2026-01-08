@@ -11,7 +11,7 @@ import { readEnv } from './env.js';
 import { buildApiRouter } from './api.js';
 import { upsertMediaFromDisk } from './mediaScanner.js';
 import { createDb, ensureSchema } from './db.js';
-import { getSyncPlaybackState, upsertSyncPlaybackState } from './syncState.js';
+import { getSyncPlaybackState, upsertSyncPlaybackState } from './runtimeState.js';
 import { registerVrIntegrations } from './vrIntegrations.js';
 
 const env = readEnv();
@@ -160,7 +160,7 @@ function buildClientsList() {
 }
 
 async function broadcastSyncState(sessionId: string) {
-  const baseState = await getSyncPlaybackState(db, sessionId);
+  const baseState = getSyncPlaybackState(sessionId);
   const playAt = sessionPlayAt.get(sessionId);
   const state = (!baseState.paused && playAt)
     ? ({ ...baseState, playAt } as any)
@@ -198,7 +198,7 @@ async function publishExternalSyncUpdate(update: {
   fps: number;
   frame: number;
 }) {
-  await upsertSyncPlaybackState(db, {
+  upsertSyncPlaybackState({
     sessionId: update.sessionId,
     mediaId: update.mediaId,
     timeMs: update.timeMs,
@@ -366,7 +366,7 @@ function registerWsHandlers() {
       if (paused) sessionPlayAt.delete(sessionId);
       if (!paused && playAtRaw === undefined) sessionPlayAt.delete(sessionId);
 
-      await upsertSyncPlaybackState(db, {
+      upsertSyncPlaybackState({
         sessionId,
         mediaId,
         timeMs,
