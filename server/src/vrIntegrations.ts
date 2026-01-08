@@ -23,6 +23,21 @@ function baseUrl(req: Request): string {
   return `${proto}://${host}`;
 }
 
+function normalizeIp(ip: string): string {
+  return String(ip || '').replace(/^::ffff:/, '').trim() || 'unknown';
+}
+
+function getClientIp(req: Request): string {
+  const xff = String(req.get('x-forwarded-for') || '').trim();
+  if (xff) {
+    // First entry should be the original client.
+    const first = xff.split(',')[0]?.trim();
+    if (first) return normalizeIp(first);
+  }
+  const ip = String((req as any).ip || (req.socket as any)?.remoteAddress || '').trim();
+  return normalizeIp(ip);
+}
+
 function parseVideoIdFromHereSphereEventId(idField: unknown): string | null {
   const raw = typeof idField === 'string' ? idField.trim() : '';
   if (!raw) return null;
@@ -312,7 +327,8 @@ export function registerVrIntegrations(
     const frame = Math.max(0, Math.floor((timeMs / 1000) * fps));
 
     const connectionKey = typeof body.connectionKey === 'string' ? body.connectionKey.trim() : '';
-    const fromClientId = connectionKey ? `vr:heresphere:${connectionKey}` : 'vr:heresphere';
+    const ipAddress = getClientIp(req);
+    const fromClientId = connectionKey ? `vr:heresphere:${ipAddress}:${connectionKey}` : `vr:heresphere:${ipAddress}`;
 
     if (mediaId) {
       try {
@@ -364,10 +380,11 @@ export function registerVrIntegrations(
     const sessionId = String((req.query as any)?.sessionId ?? 'default').trim() || 'default';
     const sessionQs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
     try {
+      const ipAddress = getClientIp(req);
       await opts?.onVrSync?.({
         sessionId,
         mediaId: id,
-        fromClientId: 'vr:heresphere',
+        fromClientId: `vr:heresphere:${ipAddress}`,
         timeMs: 0,
         paused: false,
         fps: 30,

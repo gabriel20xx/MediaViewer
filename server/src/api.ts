@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
+import { spawn } from 'node:child_process';
 import express from 'express';
 import mime from 'mime-types';
 import { upsertMediaFromDisk } from './mediaScanner.js';
@@ -101,6 +102,14 @@ export function buildApiRouter(opts: {
   // Keeping this very small makes the desktop pause essentially instantly when DeoVR stops/ closes.
   const DEOVR_INSTANT_PAUSE_DEBOUNCE_MS = 125;
 
+  // If DeoVR keeps a single request open, in-flight counting never drops to zero.
+  // In that case we infer pause when the server stops being able to push bytes
+  // (backpressure) for a short period.
+  const DEOVR_IDLE_PAUSE_MS = 650;
+
+  // For long-lived streams, publish time periodically so desktop can follow.
+  const DEOVR_TICK_MS = 1000;
+
   // Background cleanup (forget dead clients). Pause detection is handled by request close events.
   setInterval(() => {
     const now = Date.now();
@@ -122,6 +131,15 @@ export function buildApiRouter(opts: {
   function normalizeIp(ip: string): string {
     // Express may provide ::ffff:1.2.3.4 or ::1
     return String(ip || '').replace(/^::ffff:/, '').trim() || 'unknown';
+  }
+
+  function getClientIp(req: express.Request): string {
+    const xff = String(req.get('x-forwarded-for') || '').trim();
+    if (xff) {
+      const first = xff.split(',')[0]?.trim();
+      if (first) return normalizeIp(first);
+    }
+    return normalizeIp(String(req.ip || (req.socket as any)?.remoteAddress || ''));
   }
 
   router.get('/health', (_req, res) => {
@@ -365,8 +383,31 @@ export function buildApiRouter(opts: {
   router.get('/media/:id/stream', async (req, res) => {
     const id = req.params.id;
 
+    const transcode = String((req.query as any)?.transcode ?? '').trim().toLowerCase();
+
     // If a VR app is actually requesting the media stream, treat that as the authoritative
     // "this is playing" signal (DeoVR may prefetch /deovr/video/:id JSON for many items).
+    let deovrStateKey: string | null = null;
+    let deovrStateRef:
+      | {
+          sessionId: string;
+          fromClientId: string;
+          ipAddress: string;
+          userAgent: string;
+          mediaId: string;
+          startedAtMs: number;
+          lastSeenAtMs: number;
+          lastPublishAtMs: number;
+          lastTimeMs: number;
+          paused: boolean;
+          inFlight: number;
+          pauseTimer: NodeJS.Timeout | null;
+          lastDataAtMs?: number;
+          tickTimer?: NodeJS.Timeout | null;
+          idleTimer?: NodeJS.Timeout | null;
+        }
+      | null = null;
+
     try {
       const ua = String(req.get('user-agent') || '').trim();
       const mvFrom = String((req.query as any)?.mvFrom ?? '').trim().toLowerCase();
@@ -376,9 +417,10 @@ export function buildApiRouter(opts: {
       const isDeoVr = mvFrom === 'deovr' || ua.toLowerCase().includes('deovr');
       if (opts.onVrStream && isDeoVr && !isDesktopInitiated) {
         const sessionId = String((req.query as any)?.sessionId ?? 'default').trim() || 'default';
-        const ipAddress = normalizeIp(String(req.ip || (req.socket as any)?.remoteAddress || ''));
+        const ipAddress = getClientIp(req);
         const fromClientId = `vr:deovr:${ipAddress}`;
         const key = `${sessionId}|${fromClientId}`;
+        deovrStateKey = key;
 
         const now = Date.now();
         let st = deovrPlaybackByKey.get(key);
@@ -398,9 +440,80 @@ export function buildApiRouter(opts: {
             paused: false,
             inFlight: 0,
             pauseTimer: null,
+            lastDataAtMs: now,
+            tickTimer: null,
+            idleTimer: null,
           };
+
+          // Periodic tick for long-lived streams (publish time while playing).
+          st.tickTimer = setInterval(() => {
+            try {
+              if (!opts.onVrStream) return;
+              if (!st) return;
+              if (st.paused) return;
+              if ((st.inFlight || 0) <= 0) return;
+              const now2 = Date.now();
+              st.lastTimeMs = Math.max(0, now2 - (st.startedAtMs || now2));
+              if (now2 - (st.lastPublishAtMs || 0) < DEOVR_PUBLISH_MIN_MS) return;
+              st.lastPublishAtMs = now2;
+              const tMs = Math.max(0, Math.round(st.lastTimeMs || 0));
+              Promise.resolve(
+                opts.onVrStream({
+                  sessionId: st.sessionId,
+                  mediaId: st.mediaId,
+                  fromClientId: st.fromClientId,
+                  userAgent: st.userAgent || 'Unknown',
+                  ipAddress: st.ipAddress || 'unknown',
+                  timeMs: tMs,
+                  paused: false,
+                  fps: DEOVR_FPS,
+                  frame: Math.max(0, Math.floor((tMs / 1000) * DEOVR_FPS)),
+                })
+              ).catch(() => {});
+            } catch {
+              // ignore
+            }
+          }, DEOVR_TICK_MS);
+          st.tickTimer?.unref?.();
+
+          // Idle-based pause inference for single long-lived streams.
+          st.idleTimer = setInterval(() => {
+            try {
+              if (!opts.onVrStream) return;
+              if (!st) return;
+              if (st.paused) return;
+              if ((st.inFlight || 0) <= 0) return;
+              const now2 = Date.now();
+              const lastData = Number(st.lastDataAtMs) || 0;
+              if (!lastData) return;
+              if (now2 - lastData < DEOVR_IDLE_PAUSE_MS) return;
+
+              st.paused = true;
+              // Freeze time at lastTimeMs (don't advance while paused).
+              const tMs = Math.max(0, Math.round(st.lastTimeMs || 0));
+              Promise.resolve(
+                opts.onVrStream({
+                  sessionId: st.sessionId,
+                  mediaId: st.mediaId,
+                  fromClientId: st.fromClientId,
+                  userAgent: st.userAgent || 'Unknown',
+                  ipAddress: st.ipAddress || 'unknown',
+                  timeMs: tMs,
+                  paused: true,
+                  fps: DEOVR_FPS,
+                  frame: Math.max(0, Math.floor((tMs / 1000) * DEOVR_FPS)),
+                })
+              ).catch(() => {});
+            } catch {
+              // ignore
+            }
+          }, 200);
+          st.idleTimer?.unref?.();
+
           deovrPlaybackByKey.set(key, st);
         }
+
+        deovrStateRef = st;
 
         // Any new request means we're active; cancel pending pause.
         if (st.pauseTimer) {
@@ -532,6 +645,60 @@ export function buildApiRouter(opts: {
       return res.status(404).json({ error: 'Not found' });
     }
 
+    // Optional server-side transcode fallback (used by desktop when it can't decode AV1).
+    // Note: Range is not supported here; output is a fragmented MP4 stream.
+    if (transcode === 'h264' && mediaType === 'video') {
+      res.status(200);
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Content-Disposition', 'inline');
+      res.setHeader('Cache-Control', 'no-store');
+      res.removeHeader('Accept-Ranges');
+
+      const args = [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-i',
+        abs,
+        '-map',
+        '0:v:0',
+        '-map',
+        '0:a?',
+        '-c:v',
+        'libx264',
+        '-preset',
+        'veryfast',
+        '-crf',
+        '23',
+        '-pix_fmt',
+        'yuv420p',
+        '-c:a',
+        'aac',
+        '-b:a',
+        '160k',
+        '-movflags',
+        'frag_keyframe+empty_moov+default_base_moof',
+        '-f',
+        'mp4',
+        'pipe:1',
+      ];
+
+      const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const kill = () => {
+        try { proc.kill('SIGKILL'); } catch {}
+      };
+      res.once('close', kill);
+      res.once('finish', kill);
+      proc.on('error', () => {
+        try { res.status(500).end(); } catch {}
+      });
+      proc.stderr.on('data', () => {
+        // ignore (keep logs quiet)
+      });
+      proc.stdout.pipe(res);
+      return;
+    }
+
     const range = String(req.get('range') || '').trim();
     const isHead = String(req.method || '').toUpperCase() === 'HEAD';
 
@@ -556,6 +723,20 @@ export function buildApiRouter(opts: {
       if (isHead) return res.end();
 
       const stream = fsSync.createReadStream(abs, { start, end });
+      if (deovrStateRef) {
+        stream.on('data', () => {
+          try {
+            const now = Date.now();
+            deovrStateRef.lastDataAtMs = now;
+            if (deovrStateRef.paused) {
+              deovrStateRef.paused = false;
+              deovrStateRef.startedAtMs = now - (deovrStateRef.lastTimeMs || 0);
+            }
+          } catch {
+            // ignore
+          }
+        });
+      }
       stream.on('error', () => {
         try { res.destroy(); } catch {}
       });
@@ -569,6 +750,20 @@ export function buildApiRouter(opts: {
     if (isHead) return res.end();
 
     const stream = fsSync.createReadStream(abs);
+    if (deovrStateRef) {
+      stream.on('data', () => {
+        try {
+          const now = Date.now();
+          deovrStateRef.lastDataAtMs = now;
+          if (deovrStateRef.paused) {
+            deovrStateRef.paused = false;
+            deovrStateRef.startedAtMs = now - (deovrStateRef.lastTimeMs || 0);
+          }
+        } catch {
+          // ignore
+        }
+      });
+    }
     stream.on('error', () => {
       try { res.destroy(); } catch {}
     });

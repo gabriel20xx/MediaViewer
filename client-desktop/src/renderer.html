@@ -436,6 +436,8 @@
         _deoVrReconnectDelayMs: 1000,
         _lastDeoVrSyncSentAt: 0,
         _deoVrSuppressIncomingUntil: 0,
+
+        _av1FallbackTriedFor: null,
       };
 
       function parseDeoVrHostFromSourceId(sourceId) {
@@ -1456,6 +1458,16 @@
         }
         
         // Fallbacks
+        if (id.startsWith('vr:deovr:')) {
+          const host = parseDeoVrHostFromSourceId(id);
+          return host ? `VR (DeoVR) (${host})` : 'VR (DeoVR)';
+        }
+        if (id.startsWith('vr:heresphere:')) {
+          // Expected: vr:heresphere:<ip> or vr:heresphere:<ip>:<connectionKey>
+          const parts = String(id).split(':');
+          const ip = parts.length >= 3 ? String(parts[2] || '').trim() : '';
+          return ip ? `VR (HereSphere) (${ip})` : 'VR (HereSphere)';
+        }
         if (id.startsWith('vr:deovr')) return 'VR (DeoVR)';
         if (id.startsWith('vr:heresphere')) return 'VR (HereSphere)';
         if (id.startsWith('desktop-')) return 'Desktop Client';
@@ -2211,6 +2223,11 @@
       }
 
       async function openMedia(id, opts = {}) {
+        id = String(id || '').trim();
+        if (!id) {
+          logToConsole('warn', 'openMedia called with empty id');
+          return;
+        }
         const allowWhileLocked = Boolean(opts && (opts.allowWhileLocked || opts.fromRemote));
         if (isHereSphereFollowLockActive() && !allowWhileLocked) {
           logToConsole('warn', 'Blocked local media switch while following HereSphere (Sync ON)');
@@ -2253,19 +2270,25 @@
             // No-video mode: fetch duration via ffprobe so we can render a real progress bar.
             ensureDurationMs(id);
           } else {
-            v.src = new URL(`/api/media/${id}/stream`, state.serverUrl).toString();
+            // Force a clean reload even if the browser thinks it can reuse state.
+            try { v.pause(); } catch {}
+            try { v.removeAttribute('src'); v.load(); } catch {}
+            v.src = new URL(`/api/media/${encodeURIComponent(String(id))}/stream`, state.serverUrl).toString();
+            try { v.load(); } catch {}
             applyDefaultMuteForSync();
           }
         }
 
         if (!suppressSync) {
           const targetId = getControlTargetClientId();
+          const shouldOpenInUi = Boolean(targetId && String(targetId).startsWith('web-'));
           // If Sync is ON and we're connected to a WebUI target, also open the media in that WebUI.
           if (state.followRemote && state.wsConnected && targetId) {
             sendSyncUpdate({ mediaId: id, timeMs: 0, paused: true, fps: 30, frame: 0, openInUi: true }, true, targetId);
           } else if (!state.followRemote) {
             // Normal desktop-driver behavior: publish selection to the selected target (if any).
-            sendSyncUpdate({ mediaId: id, timeMs: 0, paused: true, fps: 30, frame: 0 }, false, targetId);
+            // When targeting WebUI, include openInUi so it exits the grid view.
+            sendSyncUpdate({ mediaId: id, timeMs: 0, paused: true, fps: 30, frame: 0, ...(shouldOpenInUi ? { openInUi: true } : {}) }, true, targetId);
           }
         }
 
@@ -3761,6 +3784,33 @@
         v.addEventListener('play', push);
         v.addEventListener('pause', push);
         v.addEventListener('seeked', push);
+
+        v.addEventListener('error', () => {
+          try {
+            if (state.noVideo) return;
+            if (!state.current || !state.current.id) return;
+
+            // Only attempt once per media ID to avoid loops.
+            const mediaId = String(state.current.id);
+            if (state._av1FallbackTriedFor === mediaId) return;
+
+            const err = v.error;
+            const code = err && typeof err.code === 'number' ? err.code : 0;
+            // 3 = MEDIA_ERR_DECODE, 4 = MEDIA_ERR_SRC_NOT_SUPPORTED
+            if (code !== 3 && code !== 4) return;
+
+            state._av1FallbackTriedFor = mediaId;
+            const u = new URL(`/api/media/${encodeURIComponent(mediaId)}/stream`, state.serverUrl);
+            u.searchParams.set('sessionId', String(state.sessionId || 'default'));
+            u.searchParams.set('mvFrom', 'desktop');
+            u.searchParams.set('transcode', 'h264');
+
+            logToConsole('warn', 'Video failed to decode; retrying with server transcode (H.264) ...');
+            v.src = u.toString();
+            try { v.load(); } catch {}
+            applyDefaultMuteForSync();
+          } catch {}
+        });
       }
 
       // Progress bar seeking
