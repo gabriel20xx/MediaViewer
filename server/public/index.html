@@ -25,6 +25,7 @@
         durationsSec: {},
         thumbCache: {},
         _durToken: 0,
+        _metaToken: 0,
         view: 'grid', // grid | player | vr
         current: null,
         clientId: null,
@@ -692,22 +693,30 @@
           ? `<span class="tag mvLen" data-id="${item.id}">${formatDuration(getDurationSec(item.id) ?? NaN)}</span>`
           : '';
 
-        const resTag = (item.mediaType === 'video' && Number.isFinite(item.width) && Number.isFinite(item.height) && item.width > 0 && item.height > 0)
-          ? `<span class="tag">${Math.round(item.width)}x${Math.round(item.height)}</span>`
+        const resTag = item.mediaType === 'video'
+          ? (() => {
+              const w = Number(item.width);
+              const h = Number(item.height);
+              if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+                return `<span class="tag mvRes" data-id="${escapeHtml(item.id)}">${Math.round(w)}x${Math.round(h)}</span>`;
+              }
+              return `<span class="tag mvRes" data-id="${escapeHtml(item.id)}">?x?</span>`;
+            })()
           : '';
 
         const fsSpeedTag = item.hasFunscript
           ? (() => {
-              const sp = Number.isFinite(item.funscriptAvgSpeed) && item.funscriptAvgSpeed >= 0 ? item.funscriptAvgSpeed : null;
-              if (sp === null) return `<span class="tag">?%/s</span>`;
-              return `<span class="tag">${sp.toFixed(sp >= 10 ? 0 : 1)}%/s</span>`;
+              const sp = Number(item.funscriptAvgSpeed);
+              if (!Number.isFinite(sp) || sp < 0) return `<span class="tag mvFsSpeed" data-id="${escapeHtml(item.id)}">?%/s</span>`;
+              return `<span class="tag mvFsSpeed" data-id="${escapeHtml(item.id)}">${sp.toFixed(sp >= 10 ? 0 : 1)}%/s</span>`;
             })()
           : '';
 
-        const fsStats = item.hasFunscript && Number.isFinite(item.funscriptActionCount) && item.funscriptActionCount > 0
+        const fsStats = item.hasFunscript
           ? (() => {
-              const cnt = Math.round(item.funscriptActionCount);
-              return `<span class="tag">${cnt} actions</span>`;
+              const cnt = Number(item.funscriptActionCount);
+              if (!Number.isFinite(cnt) || cnt <= 0) return `<span class="tag mvFsCnt" data-id="${escapeHtml(item.id)}">? actions</span>`;
+              return `<span class="tag mvFsCnt" data-id="${escapeHtml(item.id)}">${Math.round(cnt)} actions</span>`;
             })()
           : '';
 
@@ -908,9 +917,20 @@
         function getGridColumnCount() {
           const grid = el('grid');
           if (!grid) return 1;
-          const cols = getComputedStyle(grid).gridTemplateColumns || '';
-          const parts = cols.split(' ').filter(Boolean);
-          return Math.max(1, parts.length || 1);
+          // Count actual columns by measuring the first row.
+          // This is more reliable than parsing gridTemplateColumns, which can be a `repeat(...)`
+          // expression in some embedded browsers.
+          const kids = Array.from(grid.children || []).filter((n) => n && n.nodeType === 1);
+          if (kids.length === 0) return 1;
+          const first = kids[0];
+          const top = first.offsetTop;
+          let count = 0;
+          for (const node of kids) {
+            if (node.offsetTop !== top) break;
+            count++;
+            if (count > 200) break;
+          }
+          return Math.max(1, count || 1);
         }
 
         function setGridMinPx(px) {
@@ -943,15 +963,17 @@
             if (isAllowedGridColumnCount(up)) { targetCols = up; break; }
           }
 
-          // Compute a card-min that likely yields targetCols.
+          // Compute a card-min that guarantees targetCols fits, and targetCols+1 does not.
+          // For CSS grid: cols * cardMin + (cols-1)*gap <= w
           const raw = Math.floor((w - gap * (targetCols - 1)) / targetCols);
-          let nextMin = Math.max(120, Math.min(360, raw));
+          let nextMin = Math.max(120, Math.min(360, raw + 1));
 
-          // Nudge to hit an allowed column count exactly (without saving prefs).
-          for (let nudge = 0; nudge < 40; nudge++) {
+          // Apply + verify, then nudge if needed (without saving prefs).
+          for (let nudge = 0; nudge < 60; nudge++) {
             setGridMinPxNoPersist(nextMin);
             const cols = getGridColumnCount();
             if (isAllowedGridColumnCount(cols)) return;
+            // If we got too many columns, increase min; else decrease min.
             nextMin += (cols > targetCols) ? 2 : -2;
             if (nextMin <= 120 || nextMin >= 360) {
               setGridMinPxNoPersist(nextMin);
@@ -975,10 +997,10 @@
             if (isAllowedGridColumnCount(targetCols)) break;
           }
 
-          // Compute a card-min that likely yields targetCols.
+          // Compute a card-min that guarantees targetCols.
           // For CSS grid: cols * cardMin + (cols-1)*gap <= w
           const raw = Math.floor((w - gap * (targetCols - 1)) / targetCols);
-          let nextMin = Math.max(120, Math.min(360, raw));
+          let nextMin = Math.max(120, Math.min(360, raw + 1));
 
           // Nudge to hit an allowed column count exactly.
           for (let nudge = 0; nudge < 40; nudge++) {
@@ -1166,6 +1188,7 @@
         }
 
         prefetchDurationsForPage();
+        prefetchMetaForPage();
       }
 
       function initThumbsForGrid() {
@@ -1260,6 +1283,95 @@
               state.durationsSec[id] = d;
               const tag = document.querySelector(`.mvLen[data-id="${CSS.escape(id)}"]`);
               if (tag) tag.textContent = formatDuration(d);
+            }
+          }
+        });
+
+        await Promise.all(workers);
+      }
+
+      async function prefetchMetaForPage() {
+        const token = ++state._metaToken;
+        const ids = state.items
+          .filter((it) => it && it.mediaType === 'video')
+          .filter((it) => {
+            const needsRes = !(Number.isFinite(Number(it.width)) && Number.isFinite(Number(it.height)) && Number(it.width) > 0 && Number(it.height) > 0);
+            const needsFs = Boolean(it.hasFunscript) && (
+              !(Number.isFinite(Number(it.funscriptAvgSpeed)) && Number(it.funscriptAvgSpeed) >= 0) ||
+              !(Number.isFinite(Number(it.funscriptActionCount)) && Number(it.funscriptActionCount) > 0)
+            );
+            return needsRes || needsFs;
+          })
+          .map((it) => it.id);
+
+        if (!ids.length) return;
+
+        const setText = (sel, text) => {
+          const elx = document.querySelector(sel);
+          if (elx) elx.textContent = text;
+        };
+
+        const formatSpeedTag = (sp) => {
+          const n = Number(sp);
+          if (!Number.isFinite(n) || n < 0) return '?%/s';
+          return `${n.toFixed(n >= 10 ? 0 : 1)}%/s`;
+        };
+
+        const concurrency = 4;
+        let idx = 0;
+        const workers = Array.from({ length: concurrency }, async () => {
+          while (idx < ids.length) {
+            const id = ids[idx++];
+            if (token !== state._metaToken) return;
+
+            const info = await apiJson(`/api/media/${id}/fileinfo`).catch(() => null);
+            if (token !== state._metaToken) return;
+            if (!info) continue;
+
+            const item = state.items.find((x) => String(x.id) === String(id));
+            if (!item) continue;
+
+            const w = Number(info.width);
+            const h = Number(info.height);
+            if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+              item.width = w;
+              item.height = h;
+              setText(`.mvRes[data-id="${CSS.escape(String(id))}"]`, `${Math.round(w)}x${Math.round(h)}`);
+            }
+
+            if (item.hasFunscript) {
+              const cnt = Number(info.funscriptActionCount);
+              if (Number.isFinite(cnt) && cnt > 0) {
+                item.funscriptActionCount = cnt;
+                setText(`.mvFsCnt[data-id="${CSS.escape(String(id))}"]`, `${Math.round(cnt)} actions`);
+              }
+
+              const sp = Number(info.funscriptAvgSpeed);
+              if (Number.isFinite(sp) && sp >= 0) {
+                item.funscriptAvgSpeed = sp;
+                setText(`.mvFsSpeed[data-id="${CSS.escape(String(id))}"]`, formatSpeedTag(sp));
+              } else {
+                // Fallback: compute from actual funscript payload if DB/fileinfo fields are missing.
+                // Skip this fallback on VR browsers to save resources.
+                if (!(uaHas('heresphere') || uaHas('deovr') || uaHas('oculus') || uaHas('android'))) {
+                  setText(`.mvFsSpeed[data-id="${CSS.escape(String(id))}"]`, 'Loading…');
+                  const j = await apiJson(`/api/media/${id}/funscript`).catch(() => null);
+                  if (token !== state._metaToken) return;
+                  if (j && Array.isArray(j.actions)) {
+                    const stats = computeFunscriptStatsFromActions(j.actions);
+                    if (stats) {
+                      item.funscriptActionCount = stats.actionCount;
+                      item.funscriptAvgSpeed = stats.avgSpeed;
+                      setText(`.mvFsCnt[data-id="${CSS.escape(String(id))}"]`, `${Math.round(stats.actionCount)} actions`);
+                      setText(`.mvFsSpeed[data-id="${CSS.escape(String(id))}"]`, formatSpeedTag(stats.avgSpeed));
+                    } else {
+                      setText(`.mvFsSpeed[data-id="${CSS.escape(String(id))}"]`, '?%/s');
+                    }
+                  } else {
+                    setText(`.mvFsSpeed[data-id="${CSS.escape(String(id))}"]`, '?%/s');
+                  }
+                }
+              }
             }
           }
         });

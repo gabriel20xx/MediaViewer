@@ -305,6 +305,7 @@
         items: [],
         durationsSec: {},
         _durToken: 0,
+        _openMediaToken: 0,
         seenSources: new Map(),
         clientsMetadata: new Map(),
         sourceStates: new Map(),
@@ -533,7 +534,9 @@
       async function ensureDurationMs(mediaId) {
         if (!mediaId) return;
         if (state.durationCache.has(mediaId)) {
-          state.durationMs = state.durationCache.get(mediaId);
+          if (state.current && state.current.id === mediaId) {
+            state.durationMs = state.durationCache.get(mediaId);
+          }
           return;
         }
         if (state.durationInFlightFor === mediaId) return;
@@ -542,16 +545,26 @@
           const r = await apiJson(`/api/media/${encodeURIComponent(mediaId)}/probe`);
           const ms = typeof r?.durationMs === 'number' && Number.isFinite(r.durationMs) && r.durationMs > 0 ? Math.round(r.durationMs) : null;
           state.durationCache.set(mediaId, ms);
-          state.durationMs = ms;
+          if (state.current && state.current.id === mediaId) {
+            state.durationMs = ms;
+          }
         } catch {
           state.durationCache.set(mediaId, null);
-          state.durationMs = null;
+          if (state.current && state.current.id === mediaId) {
+            state.durationMs = null;
+          }
         } finally {
           if (state.durationInFlightFor === mediaId) state.durationInFlightFor = null;
         }
       }
 
       function setStatus(s) { statusEl.textContent = s; }
+
+      function setStatusReady() {
+        // Status line lives in the Serial card; avoid showing a misleading "Ready" when no device is connected.
+        if (state.serialConnected) setStatus('Ready');
+        else setStatus('');
+      }
 
       function setWsPill(connected) {
         wsPill.textContent = connected ? 'Server: connected' : 'Server: disconnected';
@@ -1026,7 +1039,7 @@
 
       function sendSyncUpdate(update, force = false, toClientId = null) {
         if (!state.wsConnected || !state.ws || state.ws.readyState !== 1) return;
-        if (Date.now() < state.applyingRemoteUntil) return;
+        if (!force && Date.now() < state.applyingRemoteUntil) return;
         const now = Date.now();
         if (!force && now - state.lastSyncSentAt < 200) return;
         state.lastSyncSentAt = now;
@@ -1246,7 +1259,7 @@
 
         renderList();
         renderPager();
-        setStatus('Ready');
+        setStatusReady();
         prefetchDurations();
       }
 
@@ -1339,6 +1352,7 @@
       }
 
       async function openMedia(id, opts = {}) {
+        const openToken = ++state._openMediaToken;
         const suppressSync = Boolean(opts.suppressSync);
         const it = state.items.find((x) => x.id === id);
         // When following remote, the media might not be in the currently loaded page.
@@ -1381,7 +1395,11 @@
         }
 
         try {
-          state.funscript = await apiJson(`/api/media/${id}/funscript`);
+          const fs = await apiJson(`/api/media/${id}/funscript`);
+          if (openToken !== state._openMediaToken) return;
+          if (!state.current || state.current.id !== id) return;
+
+          state.funscript = fs;
           state.funscript.actions.sort((a,b) => a.at - b.at);
           state.funscriptPointer = -1;
           state.lastFunscriptValue = 0;
@@ -1399,11 +1417,15 @@
             state.funscriptDerivatives = null;
           }
         } catch {
+          if (openToken !== state._openMediaToken) return;
+          if (!state.current || state.current.id !== id) return;
           state.funscript = null;
           state.funscriptDerivatives = null;
           state.funscriptStats = null;
         }
 
+        if (openToken !== state._openMediaToken) return;
+        if (!state.current || state.current.id !== id) return;
         setFsPill();
         updateFunscriptUi(0);
         renderList();
@@ -2482,7 +2504,7 @@
       setDrivePill();
       setFsPill();
 
-      setStatus('Ready');
+      setStatusReady();
       connectWs();
       await listPorts();
       
