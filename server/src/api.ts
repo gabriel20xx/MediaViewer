@@ -88,51 +88,36 @@ export function buildApiRouter(opts: {
       lastPublishAtMs: number;
       lastTimeMs: number;
       paused: boolean;
+      inFlight: number;
+      pauseTimer: NodeJS.Timeout | null;
     }
   >();
 
   const DEOVR_FPS = 30;
   const DEOVR_PUBLISH_MIN_MS = 750;
-  const DEOVR_STALE_TO_PAUSE_MS = 2000;
   const DEOVR_FORGET_MS = 60_000;
 
-  // Background pause detection for DeoVR sources.
+  // How quickly we treat "no active stream" as paused.
+  // Keeping this very small makes the desktop pause essentially instantly when DeoVR stops/ closes.
+  const DEOVR_INSTANT_PAUSE_DEBOUNCE_MS = 125;
+
+  // Background cleanup (forget dead clients). Pause detection is handled by request close events.
   setInterval(() => {
-    if (!opts.onVrStream) return;
     const now = Date.now();
     for (const [key, st] of Array.from(deovrPlaybackByKey.entries())) {
       if (!st) {
         deovrPlaybackByKey.delete(key);
         continue;
       }
-
       const age = now - (st.lastSeenAtMs || 0);
       if (age > DEOVR_FORGET_MS) {
-        deovrPlaybackByKey.delete(key);
-        continue;
-      }
-
-      if (!st.paused && age > DEOVR_STALE_TO_PAUSE_MS) {
-        st.paused = true;
-        st.lastPublishAtMs = now;
         try {
-          opts.onVrStream({
-            sessionId: st.sessionId,
-            mediaId: st.mediaId,
-            fromClientId: st.fromClientId,
-            userAgent: st.userAgent || 'Unknown',
-            ipAddress: st.ipAddress || 'unknown',
-            timeMs: Math.max(0, Math.round(st.lastTimeMs || 0)),
-            paused: true,
-            fps: DEOVR_FPS,
-            frame: Math.max(0, Math.floor(((st.lastTimeMs || 0) / 1000) * DEOVR_FPS)),
-          });
-        } catch {
-          // ignore
-        }
+          if (st.pauseTimer) clearTimeout(st.pauseTimer);
+        } catch {}
+        deovrPlaybackByKey.delete(key);
       }
     }
-  }, 500).unref?.();
+  }, 5000).unref?.();
 
   function normalizeIp(ip: string): string {
     // Express may provide ::ffff:1.2.3.4 or ::1
@@ -411,9 +396,54 @@ export function buildApiRouter(opts: {
             lastPublishAtMs: 0,
             lastTimeMs: 0,
             paused: false,
+            inFlight: 0,
+            pauseTimer: null,
           };
           deovrPlaybackByKey.set(key, st);
         }
+
+        // Any new request means we're active; cancel pending pause.
+        if (st.pauseTimer) {
+          try { clearTimeout(st.pauseTimer); } catch {}
+          st.pauseTimer = null;
+        }
+
+        // Track in-flight requests to allow near-instant pause when the stream stops.
+        st.inFlight = Math.max(0, (st.inFlight || 0) + 1);
+        const release = () => {
+          if (!st) return;
+          st.inFlight = Math.max(0, (st.inFlight || 0) - 1);
+          if (st.inFlight !== 0) return;
+
+          // Debounce slightly so back-to-back range requests don't flap pause/play.
+          st.pauseTimer = setTimeout(() => {
+            if (!opts.onVrStream) return;
+            if (!st) return;
+            if ((st.inFlight || 0) !== 0) return;
+            if (st.paused) return;
+
+            st.paused = true;
+            const tMs = Math.max(0, Math.round(st.lastTimeMs || 0));
+            try {
+              opts.onVrStream({
+                sessionId: st.sessionId,
+                mediaId: st.mediaId,
+                fromClientId: st.fromClientId,
+                userAgent: st.userAgent || 'Unknown',
+                ipAddress: st.ipAddress || 'unknown',
+                timeMs: tMs,
+                paused: true,
+                fps: DEOVR_FPS,
+                frame: Math.max(0, Math.floor((tMs / 1000) * DEOVR_FPS)),
+              });
+            } catch {
+              // ignore
+            }
+          }, DEOVR_INSTANT_PAUSE_DEBOUNCE_MS);
+          st.pauseTimer?.unref?.();
+        };
+        res.once('close', release);
+        res.once('finish', release);
 
         // Resume from paused: keep time continuity.
         if (st.paused) {
