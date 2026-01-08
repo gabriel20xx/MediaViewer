@@ -77,6 +77,24 @@ const sessionPlayAtLocalMs = new Map<string, number>();
 // Receivers may use this (when it looks plausible) to project timeMs forward by the true
 // end-to-end delay instead of assuming timeMs corresponds to server updatedAt.
 const sessionCapturedAtLocalMs = new Map<string, number>();
+
+// Cache mediaId -> filename for console logging to avoid repeated DB lookups.
+const mediaFilenameById = new Map<string, string | null>();
+
+async function lookupMediaFilename(mediaId: string): Promise<string | null> {
+  const id = String(mediaId || '').trim();
+  if (!id) return null;
+  if (mediaFilenameById.has(id)) return mediaFilenameById.get(id) ?? null;
+  try {
+    const r = await db.pool.query('SELECT filename FROM media_items WHERE id = $1 LIMIT 1', [id]);
+    const filename = typeof r?.rows?.[0]?.filename === 'string' ? String(r.rows[0].filename) : null;
+    mediaFilenameById.set(id, filename);
+    return filename;
+  } catch {
+    mediaFilenameById.set(id, null);
+    return null;
+  }
+}
 const clientsById = new Map<string, Set<WsClient>>();
 type WsClient = {
   send(data: string): void;
@@ -242,8 +260,11 @@ async function publishExternalSyncUpdate(update: {
     fromClientId: update.fromClientId,
   });
 
+  const filename = await lookupMediaFilename(update.mediaId);
+  const mediaLabel = filename || update.mediaId;
+
   // eslint-disable-next-line no-console
-  console.log(`[MediaViewer] External sync: session=${update.sessionId} media=${update.mediaId} from=${update.fromClientId} paused=${update.paused} t=${update.timeMs}ms`);
+  console.log(`[MediaViewer] External sync: session=${update.sessionId} media=${mediaLabel} from=${update.fromClientId} paused=${update.paused} t=${update.timeMs}ms`);
 
   await broadcastSyncState(update.sessionId);
 }
