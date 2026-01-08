@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <!-- CSP is injected at build time (scripts/copy-assets.mjs) -->
     <title>MediaViewer Desktop</title>
     <style>
       :root { color-scheme: dark; }
@@ -3574,7 +3575,8 @@
 
       setStatusReady();
       connectWs();
-      await listPorts();
+      // Defer to keep first-paint interactive.
+      setTimeout(() => { void listPorts(); }, 0);
       
       // Auto-connect to serial if enabled
       if (state.autoConnectSerial && state.lastSerialPort) {
@@ -3601,7 +3603,8 @@
         }, 500);
       }
       
-      await refresh();
+      // Defer heavy list render until after initial paint.
+      setTimeout(() => { void refresh(); }, 0);
 
       const v = $('video');
       if (v instanceof HTMLVideoElement) {

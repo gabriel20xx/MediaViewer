@@ -273,6 +273,7 @@ async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1600,
     height: 1000,
+    show: false,
     webPreferences: {
       preload: preloadPath,
       contextIsolation: true,
@@ -280,6 +281,15 @@ async function createWindow() {
       sandbox: false,
       backgroundThrottling: false,
     },
+  });
+
+  mainWindow.once('ready-to-show', () => {
+    try {
+      mainWindow?.show();
+      mainWindow?.focus();
+    } catch {
+      // ignore
+    }
   });
 
   // Forward renderer/preload console output into the main process logs.
