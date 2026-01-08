@@ -1382,25 +1382,29 @@
         }
 
         el('scan').addEventListener('click', async () => {
-          state.isScanRunning = true;
-          updateOperationButtons();
           try {
-            opShow('Starting scan...', 'indeterminate');
+            // If a scan is already running (common after reload), follow it instead of POSTing.
             try {
-              await apiJson('/api/scan', { method: 'POST' });
-            } catch (e) {
-              const msg = (e && e.message) ? e.message : String(e);
-              if (String(msg).includes('Scan already in progress')) {
-                // Treat as success: show indicator and follow the existing scan.
-                opShow('Scan already in progress...', 'indeterminate');
-              } else {
-                opShow(`Scan failed: ${msg}`, { value: 1, max: 1 });
-                await sleep(1400);
-                opHide();
+              const p = await apiJson('/api/scan/progress');
+              if (p && p.isScanning) {
+                state.isScanRunning = true;
+                updateOperationButtons();
+                const msg = p.message || 'Scanning...';
+                const scanned = typeof p.scanned === 'number' ? p.scanned : 0;
+                opShow(`${msg} (${scanned} files)`, 'indeterminate');
+                await waitForScanCompletion();
+                await loadList();
+                render();
                 return;
               }
+            } catch {
+              // ignore, we'll attempt to start a scan below
             }
 
+            state.isScanRunning = true;
+            updateOperationButtons();
+            opShow('Starting scan...', 'indeterminate');
+            await apiJson('/api/scan', { method: 'POST' });
             await waitForScanCompletion();
             await loadList();
             render();
@@ -2320,6 +2324,22 @@
 
         // Render a minimal shell immediately (prevents blank screen and enables scan indicator).
         renderBootShell();
+
+        // Probe scan state immediately so the scan indicator and button state are correct
+        // even before the full grid UI finishes loading.
+        try {
+          const p0 = await apiJson('/api/scan/progress');
+          if (p0 && p0.isScanning) {
+            state.isScanRunning = true;
+            const msg = p0.message || 'Scanning...';
+            const scanned = typeof p0.scanned === 'number' ? p0.scanned : 0;
+            opShow(`${msg} (${scanned} files)`, 'indeterminate');
+          } else {
+            state.isScanRunning = false;
+          }
+        } catch {
+          // ignore
+        }
 
         // If a scan is in progress, resume the overlay ASAP (do not block list loading).
         try { window.resumeScanIfNeeded(); } catch {}
