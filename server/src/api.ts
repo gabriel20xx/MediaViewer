@@ -18,9 +18,24 @@ let scanProgress = { isScanning: false, scanned: 0, total: 0, message: '' };
 export function buildApiRouter(opts: {
   db: Db;
   mediaRoot: string;
+  onVrStream?: (info: {
+    sessionId: string;
+    mediaId: string;
+    fromClientId: string;
+    userAgent: string;
+    ipAddress: string;
+  }) => Promise<void> | void;
 }) {
   const { db, mediaRoot } = opts;
   const router = express.Router();
+
+  // Deduplicate per (sessionId, vr client) so Range requests don't spam sync.
+  const lastVrStreamMediaByClient = new Map<string, string>();
+
+  function normalizeIp(ip: string): string {
+    // Express may provide ::ffff:1.2.3.4 or ::1
+    return String(ip || '').replace(/^::ffff:/, '').trim() || 'unknown';
+  }
 
   router.get('/health', (_req, res) => {
     res.json({ ok: true });
@@ -248,6 +263,26 @@ export function buildApiRouter(opts: {
 
   router.get('/media/:id/stream', async (req, res) => {
     const id = req.params.id;
+
+    // If a VR app is actually requesting the media stream, treat that as the authoritative
+    // "this is playing" signal (DeoVR may prefetch /deovr/video/:id JSON for many items).
+    try {
+      const ua = String(req.get('user-agent') || '').trim();
+      if (opts.onVrStream && ua.includes('DeoVR')) {
+        const sessionId = String((req.query as any)?.sessionId ?? 'default').trim() || 'default';
+        const ipAddress = normalizeIp(String(req.ip || (req.socket as any)?.remoteAddress || ''));
+        const fromClientId = `vr:deovr:${ipAddress}`;
+        const key = `${sessionId}|${fromClientId}`;
+        const prev = lastVrStreamMediaByClient.get(key);
+        if (prev !== id) {
+          lastVrStreamMediaByClient.set(key, id);
+          await opts.onVrStream({ sessionId, mediaId: id, fromClientId, userAgent: ua || 'Unknown', ipAddress });
+        }
+      }
+    } catch {
+      // ignore
+    }
+
     const itemRes = await db.pool.query(
       `SELECT rel_path FROM media_items WHERE id = $1 LIMIT 1`,
       [id]

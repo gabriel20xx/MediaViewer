@@ -1381,12 +1381,18 @@
 
           // Update clients metadata if provided
           if (msg.clients && Array.isArray(msg.clients)) {
-            state.seenSources.clear();
+            // Important: VR integrations like HereSphere are not WS clients, but we still want to be
+            // able to follow them. Preserve any `vr:*` sources we've seen from sync events.
+            const now = Date.now();
+            const nextClientIds = new Set();
+
             state.clientsMetadata.clear();
             for (const client of msg.clients) {
               if (client.clientId && client.clientId !== state.clientId) {
-                state.seenSources.set(client.clientId, Date.now());
-                state.clientsMetadata.set(client.clientId, {
+                const id = String(client.clientId);
+                nextClientIds.add(id);
+                state.seenSources.set(id, now);
+                state.clientsMetadata.set(id, {
                   userAgent: client.userAgent || 'Unknown',
                   ipAddress: client.ipAddress || 'Unknown',
                   uiView: typeof client.uiView === 'string' ? client.uiView : undefined,
@@ -1394,6 +1400,22 @@
                 });
               }
             }
+
+            // Remove disconnected non-VR sources.
+            for (const id of Array.from(state.seenSources.keys())) {
+              if (!String(id).startsWith('vr:') && !nextClientIds.has(id)) {
+                state.seenSources.delete(id);
+              }
+            }
+
+            // Prune stale VR sources (HereSphere/DeoVR) so the dropdown doesn't grow forever.
+            const vrTtlMs = 60_000;
+            for (const [id, lastSeen] of Array.from(state.seenSources.entries())) {
+              if (String(id).startsWith('vr:') && typeof lastSeen === 'number' && now - lastSeen > vrTtlMs) {
+                state.seenSources.delete(id);
+              }
+            }
+
             updateFollowSourceOptions();
             maybeUnloadIfSelectedSourceNotInPlayerView('Sync source is not in player view');
           }

@@ -26,7 +26,22 @@ if (env.CORS_ORIGIN) {
   app.use(cors({ origin: env.CORS_ORIGIN }));
 }
 
-app.use('/api', buildApiRouter({ db, mediaRoot: env.MEDIA_ROOT }));
+app.use('/api', buildApiRouter({
+  db,
+  mediaRoot: env.MEDIA_ROOT,
+  onVrStream: async (info) => {
+    // Stream request indicates actual playback start from a VR app (e.g. DeoVR).
+    await publishExternalSyncUpdate({
+      sessionId: info.sessionId,
+      mediaId: info.mediaId,
+      fromClientId: info.fromClientId,
+      timeMs: 0,
+      paused: false,
+      fps: 30,
+      frame: 0,
+    });
+  },
+}));
 
 // Serve Web UI (static files built into /public)
 const publicDir = path.join(process.cwd(), 'public');

@@ -206,22 +206,11 @@ export function registerVrIntegrations(
     const item = await getVideoById(db, id);
     if (!item) return res.status(404).json({ error: 'Not found' });
 
-    // Signal to sync listeners (desktop) that a VR player selected this media.
-    // DeoVR doesn't send websocket sync updates, so this is a server-side hint.
+    // NOTE: Don't emit sync here. DeoVR may prefetch this JSON for multiple videos while browsing,
+    // which would make the desktop follow a seemingly random item.
+    // We emit the sync signal on the actual stream request (/api/media/:id/stream) instead.
     const sessionId = String(req.query.sessionId ?? 'default').trim() || 'default';
-    try {
-      await opts?.onVrSync?.({
-        sessionId,
-        mediaId: id,
-        fromClientId: 'vr:deovr',
-        timeMs: 0,
-        paused: false,
-        fps: 30,
-        frame: 0,
-      });
-    } catch {
-      // ignore
-    }
+    const sessionQs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
 
     const stereo = (item.vrStereo === 'sbs' || item.vrStereo === 'tb' || item.vrStereo === 'mono')
       ? (item.vrStereo as any)
@@ -238,7 +227,7 @@ export function registerVrIntegrations(
           videoSources: [
             {
               resolution: 1080,
-              url: `${base}/api/media/${encodeURIComponent(id)}/stream`,
+              url: `${base}/api/media/${encodeURIComponent(id)}/stream${sessionQs}`,
             },
           ],
         },
