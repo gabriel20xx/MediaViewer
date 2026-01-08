@@ -841,15 +841,12 @@
         
         // Check requirements
         if (!state.autoHomeEnabled) {
-          logToConsole('log', 'Auto-home skipped: not enabled');
           return;
         }
         if (!state.drive) {
-          logToConsole('log', 'Auto-home skipped: drive is off');
           return;
         }
         if (!state.serialConnected) {
-          logToConsole('log', 'Auto-home skipped: serial not connected');
           return;
         }
         
@@ -2708,28 +2705,15 @@
           if (!state.current) return;
           const timeMs = Math.round((v.currentTime || 0) * 1000);
           const frame = currentFrame(v.currentTime || 0, fps);
-          logToConsole('log', `Manual video ${v.paused ? 'pause' : 'play'} - syncing to remote`);
           // Auto-home should also respond to manual pauses triggered via native video controls.
           if (v.paused) triggerAutoHome();
           else cancelAutoHome();
-          // Coordinated start when user hits play.
-          if (e && e.type === 'play') {
-            const clockOffset = typeof state.serverClockOffsetMs === 'number' && Number.isFinite(state.serverClockOffsetMs)
-              ? state.serverClockOffsetMs
-              : 0;
-            const sched = parseScheduledPlaySpec(state.scheduledPlaySpec, clockOffset);
-            if (sched) {
-              sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame, playAt: sched.playAt }, true, getControlTargetClientId());
-              try { v.pause(); } catch {}
-              scheduleLocalPlayAt(v, sched.playAtLocalMs);
-              return;
-            }
-            sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame }, true, getControlTargetClientId());
-            return;
-          }
-
-          // Manual user interactions always sync (force=true), regardless of follow-remote state
-          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame, playAt: v.paused ? null : undefined }, true, getControlTargetClientId());
+          // Manual user interactions always sync (force=true), regardless of follow-remote state.
+          // Note: We intentionally do NOT run scheduled/"coordinated" start logic here because
+          // programmatic play (e.g. from scheduleLocalPlayAt) also triggers these events.
+          // Doing so would create a play->pause->play loop and spam the console.
+          const playAt = (e && e.type === 'play') ? null : (v.paused ? null : undefined);
+          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame, playAt }, true, getControlTargetClientId());
         };
         v.addEventListener('play', push);
         v.addEventListener('pause', push);
