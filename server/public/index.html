@@ -1341,21 +1341,27 @@
           wrap.style.display = 'none';
         }
 
-        async function waitForScanCompletion() {
-          // Poll server progress until scan completes.
-          for (;;) {
-            let p = null;
-            try {
-              p = await getScanProgress();
-            } catch (e) {
-              const msg = (e && e.message) ? e.message : String(e);
-              opShow(`Scan status unavailable: ${msg}`, { value: 1, max: 1 });
-              await sleep(1200);
-              opHide();
-              state.isScanRunning = false;
-              updateOperationButtons();
-              return;
-            }
+        // Single global poller so scan UI keeps updating across page/view changes.
+        window.__mvScanPoll = window.__mvScanPoll || {
+          timer: null,
+          inFlight: false,
+          waiters: [],
+        };
+
+        function stopScanProgressPolling() {
+          const sp = window.__mvScanPoll;
+          if (sp && sp.timer) {
+            try { window.clearTimeout(sp.timer); } catch {}
+            sp.timer = null;
+          }
+        }
+
+        async function scanPollTick() {
+          const sp = window.__mvScanPoll;
+          if (!sp || sp.inFlight) return;
+          sp.inFlight = true;
+          try {
+            const p = await getScanProgress();
 
             if (p && p.isScanning) {
               state.isScanRunning = true;
@@ -1364,20 +1370,76 @@
               const scanned = typeof p.scanned === 'number' ? p.scanned : 0;
               state._scanUiText = `${msg} (${scanned} files)`;
               opShow(state._scanUiText, 'indeterminate');
-              await sleep(500);
-              continue;
+              return;
             }
 
+            // Not scanning anymore.
+            const wasRunning = Boolean(state.isScanRunning);
             state.isScanRunning = false;
             state._scanUiText = '';
             updateOperationButtons();
 
-            const doneMsg = (p && p.message) ? p.message : 'Scan complete';
-            opShow(doneMsg, { value: 1, max: 1 });
-            await sleep(800);
-            opHide();
+            if (wasRunning) {
+              const doneMsg = (p && p.message) ? p.message : 'Scan complete';
+              opShow(doneMsg, { value: 1, max: 1 });
+              await sleep(800);
+              opHide();
+
+              // Refresh list once when scan finishes (grid view only).
+              if (state.view === 'grid') {
+                await loadList();
+                render();
+              }
+            }
+
+            // Resolve any awaiters.
+            const waiters = (sp.waiters || []).slice();
+            sp.waiters = [];
+            for (const w of waiters) {
+              try { w(p); } catch {}
+            }
+
+            stopScanProgressPolling();
+          } catch {
+            // ignore
+          } finally {
+            sp.inFlight = false;
+          }
+        }
+
+        function startScanProgressPolling() {
+          const sp = window.__mvScanPoll;
+          if (!sp) return;
+          if (sp.timer) return;
+          const loop = async () => {
+            await scanPollTick();
+            // Keep polling while scan is active OR someone is awaiting completion.
+            if (state.isScanRunning || (sp.waiters && sp.waiters.length)) {
+              sp.timer = window.setTimeout(loop, 600);
+            } else {
+              sp.timer = null;
+            }
+          };
+          sp.timer = window.setTimeout(loop, 50);
+        }
+
+        async function waitForScanCompletion() {
+          // Ensure the global poller is running and resolve when scan completes.
+          try {
+            const p = await getScanProgress();
+            if (!p || !p.isScanning) return;
+          } catch {
             return;
           }
+
+          return new Promise((resolve) => {
+            try {
+              window.__mvScanPoll.waiters.push(resolve);
+            } catch {
+              // ignore
+            }
+            startScanProgressPolling();
+          });
         }
 
         async function resumeScanIfNeeded() {
@@ -1390,15 +1452,12 @@
               const scanned = typeof p.scanned === 'number' ? p.scanned : 0;
               state._scanUiText = `${msg} (${scanned} files)`;
               opShow(state._scanUiText, 'indeterminate');
-              await waitForScanCompletion();
-              if (state.view === 'grid') {
-                await loadList();
-                render();
-              }
+              startScanProgressPolling();
             } else {
               state.isScanRunning = false;
               state._scanUiText = '';
               updateOperationButtons();
+              stopScanProgressPolling();
             }
           } catch {
             // ignore

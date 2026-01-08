@@ -114,7 +114,7 @@ export function buildApiRouter(opts: {
         const doneMsg = `Complete: ${result.scanned} files scanned, ${result.upserted} updated${removedMsg}`;
         scanProgress = { isScanning: false, scanned: result.scanned, total: result.scanned, message: doneMsg };
         // eslint-disable-next-line no-console
-        console.log(`[MediaViewer] Scan complete: ${result.scanned} scanned, ${result.upserted} updated${removedMsg}`);
+        console.log(`[MediaViewer] Scan finished: ${result.scanned} scanned, ${result.upserted} updated${removedMsg}`);
       })
       .catch((err) => {
         scanProgress = { isScanning: false, scanned: 0, total: 0, message: `Error: ${err.message}` };
