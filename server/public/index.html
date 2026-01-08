@@ -1483,12 +1483,25 @@
           while (idx < ids.length) {
             const id = ids[idx++];
             if (token !== state._durToken) return;
-            const d = await probeDuration(id);
+            const meta = await probeDuration(id);
             if (token !== state._durToken) return;
-            if (typeof d === 'number' && Number.isFinite(d) && d > 0) {
+            const d = Number(meta?.durationSec);
+            if (Number.isFinite(d) && d > 0) {
               state.durationsSec[id] = d;
               const tag = document.querySelector(`.mvLen[data-id="${CSS.escape(id)}"]`);
               if (tag) tag.textContent = formatDuration(d);
+            }
+
+            const w = Number(meta?.width);
+            const h = Number(meta?.height);
+            if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+              const item = state.items.find((x) => String(x.id) === String(id));
+              if (item) {
+                item.width = w;
+                item.height = h;
+              }
+              const res = document.querySelector(`.mvRes[data-id="${CSS.escape(id)}"]`);
+              if (res) res.textContent = `${Math.round(w)}x${Math.round(h)}`;
             }
           }
         });
@@ -1601,7 +1614,12 @@
             resolve(val);
           };
 
-          v.addEventListener('loadedmetadata', () => done(v.duration), { once: true });
+          v.addEventListener('loadedmetadata', () => {
+            const durationSec = Number.isFinite(v.duration) ? v.duration : null;
+            const width = Number.isFinite(v.videoWidth) ? v.videoWidth : null;
+            const height = Number.isFinite(v.videoHeight) ? v.videoHeight : null;
+            done({ durationSec, width, height });
+          }, { once: true });
           v.addEventListener('error', () => done(null), { once: true });
         });
       }

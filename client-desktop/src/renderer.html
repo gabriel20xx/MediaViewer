@@ -1590,7 +1590,21 @@
           const active = state.current?.id === it.id ? 'active' : '';
 
           const dur = formatDuration(getDurationSec(it.id) ?? NaN);
-          const durTag = dur !== '--:--' ? `<span class="mvTag">${esc(dur)}</span>` : '';
+          const durationTag = it.mediaType === 'video'
+            ? `<span class="mvTag mvLen" data-id="${esc(it.id)}">${esc(dur)}</span>`
+            : '';
+
+          const resTag = it.mediaType === 'video'
+            ? (() => {
+                const w = Number(it.width);
+                const h = Number(it.height);
+                if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+                  return `<span class="mvTag mvRes" data-id="${esc(it.id)}">${Math.round(w)}x${Math.round(h)}</span>`;
+                }
+                return `<span class="mvTag mvRes mvTag--muted" data-id="${esc(it.id)}">?x?</span>`;
+              })()
+            : '';
+
           const vr = it.isVr ? `<span class="mvTag mvTag--vr">VR</span>` : '';
           const fs = it.hasFunscript ? `<span class="mvTag mvTag--good">funscript</span>` : `<span class="mvTag mvTag--bad">no funscript</span>`;
 
@@ -1622,8 +1636,9 @@
                 <div class="mvName">${esc(it.filename)}</div>
                 <div class="mvTags">
                   <span class="mvTag">${esc(it.mediaType)}</span>
-                  ${durTag}
                   ${vr}
+                  ${durationTag}
+                  ${resTag}
                   <span class="mvTagBreak"></span>
                   ${fs}
                   ${fsSpeedTag}
@@ -1658,22 +1673,31 @@
       }
 
       async function probeDuration(id) {
-        // Desktop version: use hidden video element to probe
+        // Desktop version: use hidden video element to probe duration + resolution
         return new Promise((resolve) => {
           const v = document.createElement('video');
           v.preload = 'metadata';
+          v.muted = true;
+          v.playsInline = true;
           v.src = new URL(`/api/media/${id}/stream`, state.serverUrl).toString();
-          v.onloadedmetadata = () => {
-             const d = v.duration;
-             v.removeAttribute('src');
-             resolve(d);
+
+          const done = (val) => {
+            try {
+              v.removeAttribute('src');
+              v.load();
+            } catch {}
+            resolve(val);
           };
-          v.onerror = () => resolve(null);
+
+          v.onloadedmetadata = () => {
+            const durationSec = Number.isFinite(v.duration) ? v.duration : null;
+            const width = Number.isFinite(v.videoWidth) ? v.videoWidth : null;
+            const height = Number.isFinite(v.videoHeight) ? v.videoHeight : null;
+            done({ durationSec, width, height });
+          };
+          v.onerror = () => done(null);
           // Timeout
-          setTimeout(() => {
-             v.removeAttribute('src');
-             resolve(null); 
-          }, 5000);
+          setTimeout(() => done(null), 5000);
         });
       }
 
@@ -1689,13 +1713,27 @@
         // Process sequentially to avoid flooding network/process
         for (const id of ids) {
           if (token !== state._durToken) return;
-          const d = await probeDuration(id);
+          const meta = await probeDuration(id);
           if (token !== state._durToken) return;
-          if (typeof d === 'number' && Number.isFinite(d) && d > 0) {
-             state.durationsSec[id] = d;
-             // Update UI if item is still visible
-             const el = document.querySelector(`.item[data-id="${id}"]`);
-             if (el) renderList(); 
+          const d = Number(meta?.durationSec);
+          if (Number.isFinite(d) && d > 0) {
+            state.durationsSec[id] = d;
+            // Update any rendered duration tag(s) for this id
+            const tags = document.querySelectorAll(`.mvLen[data-id="${CSS.escape(String(id))}"]`);
+            for (const tag of tags) tag.textContent = formatDuration(d);
+          }
+
+          const w = Number(meta?.width);
+          const h = Number(meta?.height);
+          if (Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0) {
+            const item = state.items.find((x) => String(x.id) === String(id));
+            if (item) {
+              item.width = w;
+              item.height = h;
+            }
+
+            const tags = document.querySelectorAll(`.mvRes[data-id="${CSS.escape(String(id))}"]`);
+            for (const tag of tags) tag.textContent = `${Math.round(w)}x${Math.round(h)}`;
           }
         }
       }
