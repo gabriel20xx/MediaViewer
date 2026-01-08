@@ -202,6 +202,7 @@
           fps: 30,
           frame: Math.max(0, Math.floor((p.timeMs / 1000) * 30)),
           playAt: playAtIso,
+          playAtLocalMs: playAtLocalMs,
           seekToken: token,
           seekPhase: 'commit',
           seekTargetClientId: p.peerId,
@@ -689,7 +690,19 @@
         let playAtLocalMs = null;
         if (!paused && remote.playAt) {
           const t = Date.parse(String(remote.playAt));
-          if (!Number.isNaN(t)) playAtLocalMs = t + clockOffset;
+          const fromServer = (!Number.isNaN(t)) ? (t + clockOffset) : null;
+          const fromSender = (typeof remote.playAtLocalMs === 'number' && Number.isFinite(remote.playAtLocalMs))
+            ? Number(remote.playAtLocalMs)
+            : (typeof remote.playAtLocalMs === 'string' ? Number(remote.playAtLocalMs) : NaN);
+
+          // If sender epoch is present and close to server-derived schedule, prefer it.
+          // This eliminates tiny skew when WebUI+desktop run on the same machine but
+          // have slightly different observed clockOffset due to WS latency.
+          if (Number.isFinite(fromSender) && fromSender > 0 && fromServer != null && Math.abs(fromSender - fromServer) <= 50) {
+            playAtLocalMs = fromSender;
+          } else {
+            playAtLocalMs = fromServer;
+          }
         }
 
         const treatAsPaused = (playAtLocalMs != null && playAtLocalMs > now + 10) ? true : paused;
@@ -2032,7 +2045,7 @@
               : 0;
             const sched = parseScheduledPlaySpec(state.scheduledPlaySpec, clockOffset);
             if (sched) {
-              sendSyncUpdate({ mediaId, timeMs, paused: false, fps, frame, playAt: sched.playAt }, true);
+              sendSyncUpdate({ mediaId, timeMs, paused: false, fps, frame, playAt: sched.playAt, playAtLocalMs: sched.playAtLocalMs }, true);
               try { v.pause(); } catch {}
               try { v.currentTime = timeMs / 1000; } catch {}
               scheduleLocalPlayAt(v, sched.playAtLocalMs);
@@ -2242,7 +2255,7 @@
               : 0;
             const sched = parseScheduledPlaySpec(state.scheduledPlaySpec, clockOffset);
             if (sched) {
-              sendSyncUpdate({ mediaId, timeMs, paused: false, fps, frame, playAt: sched.playAt }, true);
+              sendSyncUpdate({ mediaId, timeMs, paused: false, fps, frame, playAt: sched.playAt, playAtLocalMs: sched.playAtLocalMs }, true);
               try { vvr.pause(); } catch {}
               try { vvr.currentTime = timeMs / 1000; } catch {}
               scheduleLocalPlayAt(vvr, sched.playAtLocalMs);

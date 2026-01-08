@@ -69,6 +69,10 @@ const clientMetadata = new Map<string, { userAgent: string; ipAddress: string }>
 const clientUiStatus = new Map<string, { uiView?: string; mediaId?: string | null }>();
 // Ephemeral per-session scheduled play time (ISO string). Used to coordinate exact start.
 const sessionPlayAt = new Map<string, string>();
+// Optional sender-local epoch time for the scheduled playAt (ms since Unix epoch).
+// Receivers may use this if it is close to their server-derived schedule, to reduce
+// tiny skew from differing clockOffset estimates.
+const sessionPlayAtLocalMs = new Map<string, number>();
 const clientsById = new Map<string, Set<WsClient>>();
 type WsClient = {
   send(data: string): void;
@@ -177,8 +181,9 @@ function buildClientsList() {
 async function broadcastSyncState(sessionId: string) {
   const baseState = getSyncPlaybackState(sessionId);
   const playAt = sessionPlayAt.get(sessionId);
+  const playAtLocalMs = sessionPlayAtLocalMs.get(sessionId);
   const state = (!baseState.paused && playAt)
-    ? ({ ...baseState, playAt } as any)
+    ? ({ ...baseState, playAt, ...(typeof playAtLocalMs === 'number' && Number.isFinite(playAtLocalMs) ? { playAtLocalMs } : {}) } as any)
     : baseState;
   // Include all client metadata
   const clients = buildClientsList();
@@ -195,8 +200,9 @@ function sendSyncStateToClient(sessionId: string, toClientId: string, state: any
   if (!targets || targets.size === 0) return;
   const clients = buildClientsList();
   const playAt = sessionPlayAt.get(sessionId);
+  const playAtLocalMs = sessionPlayAtLocalMs.get(sessionId);
   const stateWithPlayAt = (state && state.paused === false && playAt)
-    ? { sessionId, ...state, playAt }
+    ? { sessionId, ...state, playAt, ...(typeof playAtLocalMs === 'number' && Number.isFinite(playAtLocalMs) ? { playAtLocalMs } : {}) }
     : { sessionId, ...state };
   const msg = JSON.stringify({ type: 'sync:state', state: stateWithPlayAt, clients });
   for (const ws of targets) {
@@ -336,9 +342,18 @@ function registerWsHandlers() {
       const playAt = playAtRaw === null ? null : (typeof playAtRaw === 'string' ? String(playAtRaw).trim() : '');
       if (playAt === null) {
         sessionPlayAt.delete(sessionId);
+        sessionPlayAtLocalMs.delete(sessionId);
       } else if (playAt) {
         const t = Date.parse(playAt);
         if (!Number.isNaN(t)) sessionPlayAt.set(sessionId, new Date(t).toISOString());
+
+        const plm = (msg as any).playAtLocalMs;
+        const n = typeof plm === 'number' ? plm : (typeof plm === 'string' ? Number(plm) : NaN);
+        if (Number.isFinite(n) && n > 0) {
+          sessionPlayAtLocalMs.set(sessionId, Math.round(n));
+        } else {
+          sessionPlayAtLocalMs.delete(sessionId);
+        }
       }
 
       const toClientId = typeof msg.toClientId === 'string' ? String(msg.toClientId).trim() : '';
@@ -363,6 +378,8 @@ function registerWsHandlers() {
       if (toClientId) {
         if (paused) sessionPlayAt.delete(sessionId);
         if (!paused && playAtRaw === undefined) sessionPlayAt.delete(sessionId);
+        if (paused) sessionPlayAtLocalMs.delete(sessionId);
+        if (!paused && playAtRaw === undefined) sessionPlayAtLocalMs.delete(sessionId);
         const scheduled = !paused ? sessionPlayAt.get(sessionId) : undefined;
         sendSyncStateToClient(sessionId, toClientId, {
           mediaId,
@@ -380,6 +397,8 @@ function registerWsHandlers() {
 
       if (paused) sessionPlayAt.delete(sessionId);
       if (!paused && playAtRaw === undefined) sessionPlayAt.delete(sessionId);
+      if (paused) sessionPlayAtLocalMs.delete(sessionId);
+      if (!paused && playAtRaw === undefined) sessionPlayAtLocalMs.delete(sessionId);
 
       upsertSyncPlaybackState({
         sessionId,

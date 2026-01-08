@@ -759,6 +759,7 @@
           fps: 30,
           frame: currentFrame(p.timeMs / 1000, 30),
           playAt: playAtIso,
+          playAtLocalMs: playAtLocalMs,
           seekToken: token,
           seekPhase: 'commit',
           seekTargetClientId: p.peerId,
@@ -1822,7 +1823,15 @@
         let playAtLocalMs = null;
         if (!paused && remote.playAt) {
           const t = Date.parse(String(remote.playAt));
-          if (!Number.isNaN(t)) playAtLocalMs = t + clockOffset;
+          const fromServer = (!Number.isNaN(t)) ? (t + clockOffset) : null;
+          const fromSender = (typeof remote.playAtLocalMs === 'number' && Number.isFinite(remote.playAtLocalMs))
+            ? Number(remote.playAtLocalMs)
+            : (typeof remote.playAtLocalMs === 'string' ? Number(remote.playAtLocalMs) : NaN);
+          if (Number.isFinite(fromSender) && fromSender > 0 && fromServer != null && Math.abs(fromSender - fromServer) <= 50) {
+            playAtLocalMs = fromSender;
+          } else {
+            playAtLocalMs = fromServer;
+          }
         }
 
         const treatAsPaused = (playAtLocalMs != null && playAtLocalMs > nowMs + 10) ? true : paused;
@@ -3266,7 +3275,7 @@
             const sched = parseScheduledPlaySpec(state.scheduledPlaySpec, clockOffset);
 
             if (sched) {
-              sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame, playAt: sched.playAt }, true, getControlTargetClientId());
+              sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame, playAt: sched.playAt, playAtLocalMs: sched.playAtLocalMs }, true, getControlTargetClientId());
               state.noVideoBaseTimeMs = timeMs;
               state.noVideoPaused = true;
               state.noVideoAnchorAtMs = now;
@@ -3304,7 +3313,7 @@
             const timeMs = Math.round((v.currentTime || 0) * 1000);
             const frame = currentFrame(v.currentTime || 0, fps);
             if (sched) {
-              sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame, playAt: sched.playAt }, true, getControlTargetClientId());
+              sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame, playAt: sched.playAt, playAtLocalMs: sched.playAtLocalMs }, true, getControlTargetClientId());
             } else {
               sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame }, true, getControlTargetClientId());
             }
