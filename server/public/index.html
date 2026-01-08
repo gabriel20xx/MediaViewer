@@ -41,6 +41,7 @@
         remoteProjectedAtMs: 0,
         remoteServerClockOffsetMs: null,
         _scheduledPlayAtLocalMs: 0,
+        _scheduledPlayTimerId: 0,
         _suppressLocalVideoEventsUntil: 0,
         _pendingSeekSync: null,
         thumbVer: 0,
@@ -436,6 +437,12 @@
         if (!Number.isFinite(when) || when <= 0) return;
         if (Math.abs((Number(state._scheduledPlayAtLocalMs) || 0) - when) < 10) return;
 
+        // Replace any prior scheduled play.
+        if (state._scheduledPlayTimerId) {
+          try { window.clearTimeout(state._scheduledPlayTimerId); } catch {}
+          state._scheduledPlayTimerId = 0;
+        }
+
         state._scheduledPlayAtLocalMs = when;
         const delayMs = Math.max(0, Math.round(when - Date.now()));
         state._applyingRemoteUntil = Math.max(state._applyingRemoteUntil, when + 1000);
@@ -444,9 +451,18 @@
         suppressLocalVideoEventsUntil(when + 1200);
 
         try { v.pause(); } catch {}
-        window.setTimeout(() => {
+        state._scheduledPlayTimerId = window.setTimeout(() => {
+          if (Number(state._scheduledPlayAtLocalMs) !== when) return;
           try { v.play(); } catch {}
         }, delayMs);
+      }
+
+      function cancelScheduledPlay() {
+        if (state._scheduledPlayTimerId) {
+          try { window.clearTimeout(state._scheduledPlayTimerId); } catch {}
+          state._scheduledPlayTimerId = 0;
+        }
+        state._scheduledPlayAtLocalMs = 0;
       }
 
       function parseScheduledPlaySpec(spec, clockOffsetMs) {
@@ -643,8 +659,11 @@
             const startTimeSeconds = (remoteTimeMs + Math.max(0, playAtLocalMs - baselineRemoteNow)) / 1000;
             try { v.currentTime = startTimeSeconds; } catch {}
             scheduleLocalPlayAt(v, playAtLocalMs);
+          } else {
+            cancelScheduledPlay();
           }
         } else {
+          cancelScheduledPlay();
           try { await v.play(); } catch {}
         }
       }

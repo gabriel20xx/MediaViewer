@@ -53,6 +53,10 @@
       .card h2 { margin: 0 0 10px 0; font-size: 12px; font-weight: 600; opacity: 0.9; }
       .kpi { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
       .kpi .pill { margin-left: 0; }
+      .mvStatusRow { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: nowrap; }
+      .mvStatusRow > * { min-width: 0; }
+      #funscriptStatus { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #funscriptLabel { white-space: nowrap; margin-top: 0; }
       .stack { display: grid; gap: 8px; }
       .meter { position: relative; height: 14px; border-radius: 999px; background: #1a1c24; border: 1px solid #2a2f3a; overflow: hidden; }
       .meter-fill { position: absolute; inset: 0; background: linear-gradient(90deg, #5b8cff, #2cd3a7); transform-origin: left center; transform: scaleX(0); transition: transform 0.12s ease-out; }
@@ -196,7 +200,11 @@
           <div class="small" id="now"></div>
           <div class="row" style="gap: 8px;">
             <button id="btnPlayPause" style="max-width: 140px;">Play/Pause</button>
-            <button id="btnVideo" style="max-width: 140px;">Video: ON</button>
+            <select id="mediaMode" style="max-width: 180px;">
+              <option value="video">Video/Audio</option>
+              <option value="audio">Only Audio</option>
+              <option value="none">No Video/Audio</option>
+            </select>
             <button id="btnFollow" style="max-width: 220px;">Sync: OFF</button>
           </div>
         </div>
@@ -204,14 +212,16 @@
         <video id="video" controls></video>
         <input id="progress" type="range" min="0" max="1" value="0" step="1" />
         <div class="small" id="progressTime">--:-- / --:--</div>
-        <div class="small" id="funscriptStatus">Funscript: not loaded</div>
+        <div class="mvStatusRow">
+          <div class="small" id="funscriptStatus">Funscript: not loaded</div>
+          <div class="meter-label" id="funscriptLabel">Value: 0% (000)</div>
+        </div>
         <div class="meter" aria-hidden="true">
           <div class="meter-fill" id="funscriptMeter"></div>
         </div>
-        <div class="meter-label" id="funscriptLabel">Value: 0% (000)</div>
         <canvas id="funscriptGraph" width="640" height="140" style="width:100%; height:140px; border:1px solid #333; border-radius:8px; background:#0f1117;"></canvas>
         <canvas id="funscriptOverviewGraph" width="640" height="90" style="width:100%; height:90px; border:1px solid #333; border-radius:8px; background:#0f1117; margin-top:8px;"></canvas>
-        <div class="small" id="noVideoHint" style="display:none;">No-video mode: using sync playback time only (no /stream requests).</div>
+        <div class="small" id="noVideoHint" style="display:none;">No media mode: using sync playback time only (no /stream requests).</div>
         <div class="small" id="playback"></div>
       </div>
     </div>
@@ -372,6 +382,7 @@
         lastPlaybackPutAt: 0,
         followRemote: false,
         noVideo: false,
+        audioOnly: false,
         noVideoBaseTimeMs: 0,
         noVideoAnchorAtMs: 0,
         noVideoPaused: true,
@@ -560,11 +571,22 @@
 
       // Coordinated start: schedule local play for an exact wall-clock time.
       let _scheduledPlayAtLocalMs = 0;
+      let _scheduledPlayTimerId = 0;
+      function cancelScheduledPlay() {
+        if (_scheduledPlayTimerId) {
+          try { window.clearTimeout(_scheduledPlayTimerId); } catch {}
+          _scheduledPlayTimerId = 0;
+        }
+        _scheduledPlayAtLocalMs = 0;
+      }
       function scheduleLocalPlayAt(v, playAtLocalMs) {
         if (!(v instanceof HTMLVideoElement)) return;
         const when = Number(playAtLocalMs) || 0;
         if (!Number.isFinite(when) || when <= 0) return;
         if (Math.abs((Number(_scheduledPlayAtLocalMs) || 0) - when) < 10) return;
+
+        // Replace any prior scheduled play.
+        cancelScheduledPlay();
 
         _scheduledPlayAtLocalMs = when;
         const delayMs = Math.max(0, Math.round(when - Date.now()));
@@ -573,7 +595,10 @@
         // Prevent programmatic pause/play from emitting local forced sync events.
         suppressLocalVideoEventsUntil(when + 1200);
         try { v.pause(); } catch {}
-        window.setTimeout(() => {
+        _scheduledPlayTimerId = window.setTimeout(() => {
+          // If we were paused/cancelled after scheduling, do nothing.
+          if (_scheduledPlayAtLocalMs !== when) return;
+          if (state.followRemote && state.remotePaused) return;
           try { v.play(); } catch {}
         }, delayMs);
       }
@@ -784,7 +809,15 @@
             if (typeof p.axis === 'string') state.axis = p.axis;
             if (typeof p.drive === 'boolean') state.drive = p.drive;
             if (typeof p.followRemote === 'boolean') state.followRemote = p.followRemote;
-            if (typeof p.noVideo === 'boolean') state.noVideo = p.noVideo;
+            if (typeof p.mediaMode === 'string') {
+              const m = String(p.mediaMode || 'video');
+              if (m === 'none') { state.noVideo = true; state.audioOnly = false; }
+              else if (m === 'audio') { state.noVideo = false; state.audioOnly = true; }
+              else { state.noVideo = false; state.audioOnly = false; }
+            } else if (typeof p.noVideo === 'boolean') {
+              state.noVideo = p.noVideo;
+              state.audioOnly = false;
+            }
             if (typeof p.followSource === 'string') state.followSource = p.followSource;
             if (typeof p.autoHomeEnabled === 'boolean') state.autoHomeEnabled = p.autoHomeEnabled;
             if (typeof p.autoHomePosition === 'number') state.autoHomePosition = p.autoHomePosition;
@@ -812,12 +845,14 @@
       }
 
       function savePrefs() {
+        const mediaMode = state.noVideo ? 'none' : (state.audioOnly ? 'audio' : 'video');
         localStorage.setItem('mvDesktopPrefs', JSON.stringify({
           serverUrl: state.serverUrl,
           axis: state.axis,
           drive: state.drive,
           followRemote: state.followRemote,
           noVideo: state.noVideo,
+          mediaMode,
           followSource: state.followSource,
           autoHomeEnabled: state.autoHomeEnabled,
           autoHomePosition: state.autoHomePosition,
@@ -1116,27 +1151,42 @@
           state.followRemote = false;
           savePrefs();
           sel.value = '';
-          // Source disconnected: stop following, keep local playback.
-          logToConsole('log', 'Sync WebUI source disconnected - set to None');
+          unloadCurrentMedia('Sync WebUI source disconnected - set to None - unloading');
         }
 
         updateFollowButtonUi();
       }
 
       function setVideoModeUi() {
-        $('btnVideo').textContent = state.noVideo ? 'Video: OFF' : 'Video: ON';
-        // Even in no-video mode, keep controls enabled so we can drive remote clients.
+        // Even in no-media mode, keep controls enabled so we can drive remote clients.
         $('btnPlayPause').disabled = false;
 
-        const v = $('video');
-        if (v instanceof HTMLVideoElement) {
-          v.style.display = state.noVideo ? 'none' : '';
+        const mode = state.noVideo ? 'none' : (state.audioOnly ? 'audio' : 'video');
+
+        const sel = $('mediaMode');
+        if (sel instanceof HTMLSelectElement) {
+          sel.value = mode;
         }
 
-        const hint = $('noVideoHint');
-        if (hint) hint.style.display = state.noVideo ? '' : 'none';
+        const v = $('video');
+        const showVideo = mode === 'video';
+        if (v instanceof HTMLVideoElement) {
+          v.style.display = showVideo ? '' : 'none';
+        }
 
-        if (state.noVideo && v instanceof HTMLVideoElement) {
+        const playPauseBtn = $('btnPlayPause');
+        if (playPauseBtn) playPauseBtn.style.display = showVideo ? 'none' : '';
+
+        // Hide custom seek UI when the native video player is visible.
+        const progress = $('progress');
+        const progressTime = $('progressTime');
+        if (progress) progress.style.display = showVideo ? 'none' : '';
+        if (progressTime) progressTime.style.display = showVideo ? 'none' : '';
+
+        const hint = $('noVideoHint');
+        if (hint) hint.style.display = mode === 'none' ? '' : 'none';
+
+        if (mode === 'none' && v instanceof HTMLVideoElement) {
           // Ensure we don't keep any active stream.
           try {
             v.pause();
@@ -1198,6 +1248,7 @@
               }
             }
             updateFollowSourceOptions();
+            maybeUnloadIfSelectedSourceNotInPlayerView('Sync source is not in player view');
           }
 
           const src = String(msg.state.fromClientId || '');
@@ -1206,6 +1257,7 @@
             // Cache state for this source for instant switching
             state.sourceStates.set(src, msg.state);
             updateFollowSourceOptions();
+            maybeUnloadIfSelectedSourceNotInPlayerView('Sync source is not in player view');
             
             // Log VR sync events for debugging
             if (src.startsWith('vr:')) {
@@ -1234,30 +1286,43 @@
         state.ws.send(JSON.stringify(payload));
       }
 
-      async function applyRemoteSyncState(remote) {
-        function unloadCurrentMedia(reason) {
-          if (!state.current) return;
-          state.current = null;
-          state.funscript = null;
-          state.funscriptPointer = -1;
-          state.durationMs = null;
-          state.lastAppliedRemotePaused = null;
-          $('now').textContent = 'Now: (Nothing)';
+      function unloadCurrentMedia(reason) {
+        if (!state.current) return;
+        cancelScheduledPlay();
+        state.current = null;
+        state.funscript = null;
+        state.funscriptPointer = -1;
+        state.durationMs = null;
+        state.lastAppliedRemotePaused = null;
+        $('now').textContent = 'Now: (Nothing)';
 
-          const v = $('video');
-          if (v instanceof HTMLVideoElement) {
-            try {
-              v.pause();
-              v.removeAttribute('src');
-              v.load();
-            } catch {}
-          }
-
-          updateFunscriptUi(0);
-          renderList();
-          if (reason) logToConsole('log', reason);
+        const v = $('video');
+        if (v instanceof HTMLVideoElement) {
+          try {
+            v.pause();
+            v.removeAttribute('src');
+            v.load();
+          } catch {}
         }
 
+        updateFunscriptUi(0);
+        renderList();
+        if (reason) logToConsole('log', reason);
+      }
+
+      function maybeUnloadIfSelectedSourceNotInPlayerView(reasonPrefix) {
+        if (!state.followRemote) return;
+        const src = String(state.followSource || '');
+        if (!src) return;
+        const meta = state.clientsMetadata.get(src);
+        const uiView = meta && typeof meta.uiView === 'string' ? meta.uiView : '';
+        const isPlayerView = uiView === 'player' || uiView === 'vr';
+        if (uiView && !isPlayerView) {
+          unloadCurrentMedia(`${reasonPrefix} (${uiView}) - unloading`);
+        }
+      }
+
+      async function applyRemoteSyncState(remote) {
         // Seek-sync handshake messages (request/ready/commit)
         if (remote && remote.seekToken && remote.seekPhase) {
           // If targeted and not for us, ignore.
@@ -1448,11 +1513,13 @@
                 scheduleLocalPlayAt(v, playAtLocalMs);
               } else {
                 logToConsole('log', 'Pausing video (remote)');
+                cancelScheduledPlay();
                 try { v.pause(); } catch {}
                 triggerAutoHome(); // Trigger auto-home when remotely paused
               }
             } else {
               logToConsole('log', 'Playing video (remote)');
+                cancelScheduledPlay();
               suppressLocalVideoEventsUntil(Date.now() + 1500);
               try { await v.play(); } catch {}
               cancelAutoHome(); // Cancel auto-home when remotely unpaused
@@ -2392,6 +2459,12 @@
 
         const frame = currentFrame(timeMs / 1000, fps);
 
+        // Update Play/Pause button label based on current state.
+        const btnPlayPause = $('btnPlayPause');
+        if (btnPlayPause) {
+          btnPlayPause.textContent = paused ? 'Play' : 'Pause';
+        }
+
         // Update progress bar and time display.
         const progress = $('progress');
         let durationMs = state.durationMs;
@@ -2815,48 +2888,63 @@
         }
       });
 
-      $('btnVideo').addEventListener('click', () => {
-        state.noVideo = !state.noVideo;
+      $('mediaMode').addEventListener('change', () => {
+        const sel = $('mediaMode');
+        if (!(sel instanceof HTMLSelectElement)) return;
+
+        const prevNoVideo = Boolean(state.noVideo);
+        const prevAudioOnly = Boolean(state.audioOnly);
+        const prevMode = prevNoVideo ? 'none' : (prevAudioOnly ? 'audio' : 'video');
+
+        const nextMode = String(sel.value || 'video');
+        state.noVideo = nextMode === 'none';
+        state.audioOnly = nextMode === 'audio';
         savePrefs();
         setVideoModeUi();
-        
-        // When toggling video mode, we try to preserve playback state as much as possible
-        const v = $('video');
-        if (!state.noVideo) {
-          // Turning Video ON
-          if (state.current?.id && v instanceof HTMLVideoElement) {
-             const wasPaused = state.followRemote ? (state.remotePaused ?? true) : Boolean(state.noVideoPaused);
-             const seekToMs = state.followRemote
-               ? (Number(state.remoteTimeMs) || 0)
-               : (Number(getLocalNoVideoTimeMsAndPaused().timeMs) || 0);
-             
-             // Reload stream but try to seek to where we were
-             // openMedia is too destructive (resets funscript state), so we manually set src
-             v.src = new URL(`/api/media/${state.current.id}/stream`, state.serverUrl).toString();
-             v.currentTime = seekToMs > 0 ? (seekToMs / 1000) : 0;
-             if (!wasPaused) {
-                 v.play().catch(()=>{});
-             }
-          }
-        } else {
-           // Turning Video OFF
-           if (v instanceof HTMLVideoElement) {
-             const timeMs = Math.round((v.currentTime || 0) * 1000);
-             const d = Number(v.duration);
-             if (Number.isFinite(d) && d > 0) {
-               state.durationMs = Math.round(d * 1000);
-             }
-             v.pause();
-             v.removeAttribute('src');
-             v.load();
 
-             // Seed local no-video clock from the last known playback position.
-             state.noVideoBaseTimeMs = Math.max(0, timeMs);
-             state.noVideoAnchorAtMs = Date.now();
-             state.noVideoPaused = true;
-             state.noVideoScheduledPlayAtLocalMs = 0;
-           }
+        // Preserve playback state as much as possible when enabling/disabling the stream.
+        const v = $('video');
+        if (!(v instanceof HTMLVideoElement)) return;
+
+        if (prevMode === 'none' && nextMode !== 'none') {
+          // Turning media playback ON (from no-media)
+          if (state.current?.id) {
+            const wasPaused = state.followRemote ? (state.remotePaused ?? true) : Boolean(state.noVideoPaused);
+            const seekToMs = state.followRemote
+              ? (Number(state.remoteTimeMs) || 0)
+              : (Number(getLocalNoVideoTimeMsAndPaused().timeMs) || 0);
+
+            v.src = new URL(`/api/media/${state.current.id}/stream`, state.serverUrl).toString();
+            try { v.currentTime = seekToMs > 0 ? (seekToMs / 1000) : 0; } catch {}
+            if (!wasPaused) {
+              v.play().catch(() => {});
+            }
+          }
+          return;
         }
+
+        if (prevMode !== 'none' && nextMode === 'none') {
+          // Turning media playback OFF (to no-media)
+          const timeMs = Math.round((v.currentTime || 0) * 1000);
+          const d = Number(v.duration);
+          if (Number.isFinite(d) && d > 0) {
+            state.durationMs = Math.round(d * 1000);
+          }
+          try {
+            v.pause();
+            v.removeAttribute('src');
+            v.load();
+          } catch {}
+
+          // Seed local no-video clock from the last known playback position.
+          state.noVideoBaseTimeMs = Math.max(0, timeMs);
+          state.noVideoAnchorAtMs = Date.now();
+          state.noVideoPaused = true;
+          state.noVideoScheduledPlayAtLocalMs = 0;
+          return;
+        }
+
+        // Switching between video/audio-only only shows/hides the element.
       });
 
       $('btnFollow').addEventListener('click', () => {
@@ -2899,25 +2987,25 @@
         updateFollowButtonUi();
         savePrefs();
 
-        // If changed to None, stop following but keep local playback.
+        // If changed to None, stop following and unload local playback.
         if (!val) {
-          logToConsole('log', 'Sync WebUI set to None');
+          unloadCurrentMedia('Sync WebUI set to None - unloading');
+          return;
+        }
+
+        // If changed to a specific source, and that source is currently on homepage/grid,
+        // unload immediately to mirror the WebUI's state.
+        const meta = state.clientsMetadata.get(val);
+        const uiView = meta && typeof meta.uiView === 'string' ? meta.uiView : '';
+        const isPlayerView = uiView === 'player' || uiView === 'vr';
+        if (uiView && !isPlayerView) {
+          unloadCurrentMedia(`Sync WebUI changed to ${val} - source is in ${uiView} view - unloading`);
           return;
         }
 
         // If changed to a specific source, check if we have cached state.
         const cached = state.sourceStates.get(val);
         if (cached) {
-          const meta = state.clientsMetadata.get(val);
-          const uiView = meta && typeof meta.uiView === 'string' ? meta.uiView : '';
-          const isPlayerView = uiView === 'player' || uiView === 'vr';
-
-          if (uiView && !isPlayerView) {
-            // User requested: don't auto-load media when the WebUI isn't on a play screen.
-            logToConsole('log', `Sync WebUI changed to ${val} - source is in ${uiView} view; waiting for player update`);
-            return;
-          }
-
           logToConsole('log', `Sync WebUI changed to ${val} - applying cached state`);
           applyRemoteSyncState(cached);
         } else {

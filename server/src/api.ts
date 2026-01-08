@@ -273,6 +273,21 @@ export function buildApiRouter(opts: {
     const item = itemRes.rows[0];
     if (!item) return res.status(404).send('Not found');
 
+    // Browser caching:
+    // - WebUI appends `?v=${thumbVer}` specifically to bust cache when thumbs are regenerated.
+    // - When a version is present, it's safe to cache aggressively.
+    // - Without a version, keep caching modest to avoid sticky stale thumbnails.
+    try {
+      const v = (req.query as any)?.v;
+      if (v !== undefined && v !== null && String(v).trim() !== '') {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      } else {
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+      }
+    } catch {
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+    }
+
     const abs = path.join(mediaRoot, item.rel_path);
 
     if (item.media_type === 'image') {
