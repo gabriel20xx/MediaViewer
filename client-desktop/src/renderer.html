@@ -444,6 +444,39 @@
         return id.startsWith('vr:');
       }
 
+      function isHereSphereSourceId(sourceId) {
+        const id = String(sourceId || '').trim();
+        return id.startsWith('vr:heresphere');
+      }
+
+      function isHereSphereFollowLockActive() {
+        // Requirement: disable local playback/media switching when synchronised with HereSphere.
+        // Interpreted as: Sync is ON (following) and HereSphere is the selected source.
+        return Boolean(state.followRemote && isHereSphereSourceId(state.followSource));
+      }
+
+      function updateHereSphereFollowLockUi() {
+        const locked = isHereSphereFollowLockActive();
+
+        const v = $('video');
+        if (v instanceof HTMLVideoElement) {
+          v.controls = !locked;
+          v.style.pointerEvents = locked ? 'none' : 'auto';
+        }
+
+        const progressBar = $('progress');
+        if (progressBar instanceof HTMLInputElement) {
+          progressBar.disabled = locked;
+          progressBar.title = locked ? 'Locked while following HereSphere (Sync ON)' : '';
+        }
+
+        const q = $('q');
+        if (q instanceof HTMLInputElement) {
+          q.disabled = locked;
+          q.title = locked ? 'Locked while following HereSphere (Sync ON)' : '';
+        }
+      }
+
       function isDrivingDeoVr() {
         // Desktop is the leader when followRemote is OFF.
         if (state.followRemote) return false;
@@ -2074,6 +2107,10 @@
       }
 
       async function openMedia(id, opts = {}) {
+        if (isHereSphereFollowLockActive()) {
+          logToConsole('warn', 'Blocked local media switch while following HereSphere (Sync ON)');
+          return;
+        }
         const openToken = ++state._openMediaToken;
         const suppressSync = Boolean(opts.suppressSync);
         const it = state.items.find((x) => x.id === id);
@@ -3362,6 +3399,8 @@
         updateFollowButtonUi();
         savePrefs();
 
+        updateHereSphereFollowLockUi();
+
         // If we just became the driver, immediately publish our current state.
         if (!state.followRemote) {
           const v = $('video');
@@ -3391,6 +3430,8 @@
         state.followRemote = Boolean(val);
         updateFollowButtonUi();
         savePrefs();
+
+        updateHereSphereFollowLockUi();
 
         // Auto-connect DeoVR remote control when its source is selected.
         updateDeoVrRemoteControlConnection();
@@ -3481,6 +3522,9 @@
       $('serverUrl').value = state.serverUrl;
       await allowSelfSignedForServer(state.serverUrl);
 
+      // Apply initial control lock state (e.g., if prefs selected HereSphere + Sync ON).
+      updateHereSphereFollowLockUi();
+
       // If prefs already selected DeoVR as sync source, connect now.
       updateDeoVrRemoteControlConnection();
 
@@ -3564,6 +3608,7 @@
         const fps = 30;
         const push = (e) => {
           if (isLocalVideoEventSuppressed()) return;
+          if (isHereSphereFollowLockActive()) return;
           // Don't send sync updates if we're currently applying remote state (prevent feedback loop)
           if (state.isApplyingRemoteState) return;
           if (!state.current) return;

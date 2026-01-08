@@ -2172,11 +2172,55 @@
         setView('grid', null);
       };
 
+      // Some browsers treat function declarations inside blocks as block-scoped.
+      // Ensure scan-resume is always callable from the startup IIFE.
+      window.resumeScanIfNeeded = window.resumeScanIfNeeded || (async () => {
+        try {
+          const res = await fetch('/api/scan/progress', { cache: 'no-store' });
+          if (!res.ok) return;
+          const p = await res.json();
+          if (p && p.isScanning) {
+            // Prefer the existing in-page helpers if they exist.
+            if (typeof resumeScanIfNeeded === 'function') {
+              await resumeScanIfNeeded();
+              return;
+            }
+            // Fallback: minimal progress overlay + poll.
+            const op = document.getElementById('opStatus');
+            const opText = document.getElementById('opText');
+            const opProg = document.getElementById('opProgress');
+            if (op && opText && opProg) {
+              op.style.display = 'flex';
+              opText.textContent = String(p.message || 'Scanning...');
+              opProg.removeAttribute('value');
+            }
+            for (;;) {
+              const r2 = await fetch('/api/scan/progress', { cache: 'no-store' });
+              if (!r2.ok) break;
+              const p2 = await r2.json();
+              if (p2 && p2.isScanning) {
+                if (op && opText) opText.textContent = String(p2.message || 'Scanning...');
+                await new Promise((r) => setTimeout(r, 500));
+                continue;
+              }
+              break;
+            }
+            if (op) op.style.display = 'none';
+            if (state.view === 'grid' && typeof loadList === 'function' && typeof render === 'function') {
+              await loadList();
+              render();
+            }
+          }
+        } catch {
+          // ignore
+        }
+      });
+
       (async () => {
         ensureClientId();
         loadPrefs();
         connectWs();
-        await resumeScanIfNeeded();
+        await window.resumeScanIfNeeded();
         await loadList();
         render();
       })();
