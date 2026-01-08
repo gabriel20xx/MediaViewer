@@ -37,6 +37,8 @@
         pageSize: 12,
         total: 0,
         items: [],
+        isScanRunning: false,
+        isRegenThumbsRunning: false,
         funFilter: 'all', // all | with | without
         vrFilter: 'all', // all | vr | nonvr
         gridMin: 180,
@@ -1088,6 +1090,9 @@
 
         el('grid').style.setProperty('--card-min', `${state.gridMin}px`);
 
+        // Apply disabled state after DOM is created.
+        updateOperationButtons();
+
         el('q').addEventListener('input', (e) => {
           const val = e.target.value;
           window.clearTimeout(window.__qT);
@@ -1276,6 +1281,22 @@
 
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+          function updateOperationButtons() {
+            const scanBtn = document.getElementById('scan');
+            if (scanBtn instanceof HTMLButtonElement) {
+              scanBtn.disabled = Boolean(state.isScanRunning);
+              scanBtn.title = state.isScanRunning ? 'Scan running…' : 'Rescan';
+            }
+
+            const regenBtn = document.getElementById('regenThumbs');
+            if (regenBtn instanceof HTMLButtonElement) {
+              regenBtn.disabled = Boolean(state.isRegenThumbsRunning);
+              regenBtn.title = state.isRegenThumbsRunning
+                ? 'Regenerating thumbs…'
+                : 'Clear server thumbnail cache and refresh';
+            }
+          }
+
         function opShow(text, mode) {
           const wrap = document.getElementById('opStatus');
           const prog = document.getElementById('opProgress');
@@ -1315,12 +1336,17 @@
             }
 
             if (p && p.isScanning) {
+              state.isScanRunning = true;
+              updateOperationButtons();
               const msg = p.message || 'Scanning...';
               const scanned = typeof p.scanned === 'number' ? p.scanned : 0;
               opShow(`${msg} (${scanned} files)`, 'indeterminate');
               await sleep(500);
               continue;
             }
+
+            state.isScanRunning = false;
+            updateOperationButtons();
 
             const doneMsg = (p && p.message) ? p.message : 'Scan complete';
             opShow(doneMsg, { value: 1, max: 1 });
@@ -1334,6 +1360,8 @@
           try {
             const p = await apiJson('/api/scan/progress');
             if (p && p.isScanning) {
+              state.isScanRunning = true;
+              updateOperationButtons();
               const msg = p.message || 'Scanning...';
               const scanned = typeof p.scanned === 'number' ? p.scanned : 0;
               opShow(`${msg} (${scanned} files)`, 'indeterminate');
@@ -1342,6 +1370,9 @@
                 await loadList();
                 render();
               }
+            } else {
+              state.isScanRunning = false;
+              updateOperationButtons();
             }
           } catch {
             // ignore
@@ -1349,7 +1380,8 @@
         }
 
         el('scan').addEventListener('click', async () => {
-          el('scan').disabled = true;
+          state.isScanRunning = true;
+          updateOperationButtons();
           try {
             opShow('Starting scan...', 'indeterminate');
             await apiJson('/api/scan', { method: 'POST' });
@@ -1357,13 +1389,14 @@
             await loadList();
             render();
           } finally {
-            el('scan').disabled = false;
+            state.isScanRunning = false;
+            updateOperationButtons();
           }
         });
 
         el('regenThumbs').addEventListener('click', async () => {
-          const btn = el('regenThumbs');
-          btn.disabled = true;
+          state.isRegenThumbsRunning = true;
+          updateOperationButtons();
           try {
             opShow('Regenerating thumbs...', 'indeterminate');
             await apiJson('/api/cache/clear', { method: 'POST' });
@@ -1374,7 +1407,8 @@
             await sleep(800);
             opHide();
           } finally {
-            btn.disabled = false;
+            state.isRegenThumbsRunning = false;
+            updateOperationButtons();
           }
         });
 
