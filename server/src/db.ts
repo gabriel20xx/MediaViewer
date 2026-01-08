@@ -23,11 +23,17 @@ export async function ensureSchema(db: Db): Promise<void> {
       id TEXT PRIMARY KEY,
       rel_path TEXT NOT NULL UNIQUE,
       filename TEXT NOT NULL,
+      title TEXT,
       ext TEXT NOT NULL,
       media_type TEXT NOT NULL,
       size_bytes BIGINT NOT NULL,
       modified_ms BIGINT NOT NULL,
+      duration_ms INTEGER,
+      width INTEGER,
+      height INTEGER,
       has_funscript BOOLEAN NOT NULL DEFAULT FALSE,
+      funscript_action_count INTEGER,
+      funscript_avg_speed REAL,
       is_vr BOOLEAN NOT NULL DEFAULT FALSE,
       vr_fov SMALLINT,
       vr_stereo TEXT,
@@ -49,6 +55,10 @@ export async function ensureSchema(db: Db): Promise<void> {
 
     CREATE INDEX IF NOT EXISTS idx_media_items_modified_ms ON media_items (modified_ms DESC);
     CREATE INDEX IF NOT EXISTS idx_media_items_filename ON media_items (filename);
+    CREATE INDEX IF NOT EXISTS idx_media_items_title ON media_items (title);
+    CREATE INDEX IF NOT EXISTS idx_media_items_duration_ms ON media_items (duration_ms);
+    CREATE INDEX IF NOT EXISTS idx_media_items_resolution ON media_items (width, height);
+    CREATE INDEX IF NOT EXISTS idx_media_items_funscript_speed ON media_items (funscript_avg_speed);
 
     CREATE TABLE IF NOT EXISTS sync_playback_state (
       session_id TEXT PRIMARY KEY,
@@ -66,6 +76,26 @@ export async function ensureSchema(db: Db): Promise<void> {
   await db.pool.query(`
     ALTER TABLE media_items
       ADD COLUMN IF NOT EXISTS is_vr BOOLEAN NOT NULL DEFAULT FALSE;
+  `);
+
+  await db.pool.query(`
+    ALTER TABLE media_items
+      ADD COLUMN IF NOT EXISTS title TEXT;
+
+    ALTER TABLE media_items
+      ADD COLUMN IF NOT EXISTS duration_ms INTEGER;
+
+    ALTER TABLE media_items
+      ADD COLUMN IF NOT EXISTS width INTEGER;
+
+    ALTER TABLE media_items
+      ADD COLUMN IF NOT EXISTS height INTEGER;
+
+    ALTER TABLE media_items
+      ADD COLUMN IF NOT EXISTS funscript_action_count INTEGER;
+
+    ALTER TABLE media_items
+      ADD COLUMN IF NOT EXISTS funscript_avg_speed REAL;
   `);
 
   await db.pool.query(`

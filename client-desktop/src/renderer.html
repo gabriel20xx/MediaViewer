@@ -219,6 +219,12 @@
             </label>
             <div style="color:#888; font-size:0.9em; margin-left:26px; margin-top:4px;">Ramps device output briefly after pause → play.</div>
           </div>
+
+          <div style="margin-bottom:15px;">
+            <label style="display:block; color:#fff; margin-bottom:5px;">Scheduled play (sync)</label>
+            <input type="text" id="scheduledPlaySpecInput" style="width:260px; padding:5px;" placeholder="off | seconds | HH:MM | ISO" />
+            <div style="color:#888; font-size:0.9em; margin-top:4px;">When set, Play sends a scheduled start time so synced clients can start together.</div>
+          </div>
           <div style="margin-bottom:15px;">
             <label style="display:block; color:#fff; margin-bottom:5px;">Script Delay (ms)</label>
             <input type="number" id="scriptDelayInput" step="10" style="width:150px; padding:5px;">
@@ -321,6 +327,8 @@
         serialResumeDelayMs: 0,
         serialResumeHoldUntil: 0,
         smoothResumeFunscript: false,
+        scheduledPlaySpec: '0.4',
+        funscriptStats: null,
         smoothResumeStartAt: 0,
         smoothResumeUntil: 0,
         smoothResumePos: null,
@@ -385,6 +393,78 @@
         window.setTimeout(() => {
           try { v.play(); } catch {}
         }, delayMs);
+      }
+
+      function parseScheduledPlaySpec(spec, clockOffsetMs) {
+        const s = String(spec ?? '').trim();
+        if (!s) return null;
+        if (s.toLowerCase() === 'off' || s.toLowerCase() === 'none' || s === '0') return null;
+
+        const offset = Number(clockOffsetMs) || 0;
+
+        // Relative seconds (e.g. "0.4" or "5")
+        if (/^\+?\d+(?:\.\d+)?$/.test(s)) {
+          const sec = Number(s);
+          if (!Number.isFinite(sec) || sec <= 0) return null;
+          const playAtLocalMs = Date.now() + Math.round(sec * 1000);
+          const playAtServerMs = playAtLocalMs - offset;
+          return { playAt: new Date(playAtServerMs).toISOString(), playAtLocalMs };
+        }
+
+        // Fixed local time-of-day (HH:MM[:SS])
+        const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(s);
+        if (m) {
+          const hh = Math.max(0, Math.min(23, Number(m[1])));
+          const mm = Math.max(0, Math.min(59, Number(m[2])));
+          const ss = Math.max(0, Math.min(59, Number(m[3] ?? 0)));
+          const now = new Date();
+          const target = new Date(now);
+          target.setHours(hh, mm, ss, 0);
+          if (target.getTime() <= now.getTime() + 50) target.setDate(target.getDate() + 1);
+          const playAtLocalMs = target.getTime();
+          const playAtServerMs = playAtLocalMs - offset;
+          return { playAt: new Date(playAtServerMs).toISOString(), playAtLocalMs };
+        }
+
+        // Fixed absolute date/time (ISO or anything Date.parse accepts)
+        const parsed = Date.parse(s);
+        if (!Number.isNaN(parsed)) {
+          const playAtLocalMs = parsed;
+          if (!Number.isFinite(playAtLocalMs) || playAtLocalMs <= Date.now() + 50) return null;
+          const playAtServerMs = playAtLocalMs - offset;
+          return { playAt: new Date(playAtServerMs).toISOString(), playAtLocalMs };
+        }
+
+        return null;
+      }
+
+      function computeFunscriptStatsFromActions(actions) {
+        if (!Array.isArray(actions) || actions.length === 0) return null;
+        let totalAbsDeltaPos = 0;
+        let totalDtMs = 0;
+        for (let i = 1; i < actions.length; i++) {
+          const a0 = actions[i - 1];
+          const a1 = actions[i];
+          const t0 = Number(a0?.at);
+          const t1 = Number(a1?.at);
+          const p0 = Number(a0?.pos);
+          const p1 = Number(a1?.pos);
+          if (!Number.isFinite(t0) || !Number.isFinite(t1) || !Number.isFinite(p0) || !Number.isFinite(p1)) continue;
+          const dt = t1 - t0;
+          if (!(dt > 0)) continue;
+          totalDtMs += dt;
+          totalAbsDeltaPos += Math.abs(p1 - p0);
+        }
+        const avgSpeed = totalDtMs > 0 ? (totalAbsDeltaPos / totalDtMs) * 1000 : 0;
+        return { actionCount: actions.length, avgSpeed };
+      }
+
+      function formatFunscriptStats(actionCount, avgSpeed) {
+        const count = Number(actionCount);
+        if (!Number.isFinite(count) || count <= 0) return null;
+        const speed = Number(avgSpeed);
+        const speedPart = Number.isFinite(speed) && speed > 0 ? ` · ${speed.toFixed(1)}%/s` : '';
+        return `${Math.round(count)} actions${speedPart}`;
       }
 
       const $ = (id) => document.getElementById(id);
@@ -487,7 +567,13 @@
       function setFsPill() {
         const n = state.funscript?.actions?.length;
         if (typeof n === 'number') {
-          fsPill.textContent = 'Funscript: Loaded';
+          const stats = state.funscriptStats;
+          if (stats && Number.isFinite(stats.actionCount) && stats.actionCount > 0 && Number.isFinite(stats.avgSpeed) && stats.avgSpeed >= 0) {
+            const sp = stats.avgSpeed;
+            fsPill.textContent = `Funscript: ${Math.round(stats.actionCount)} actions · ${sp.toFixed(sp >= 10 ? 0 : 1)}%/s`;
+          } else {
+            fsPill.textContent = 'Funscript: Loaded';
+          }
           fsPill.className = 'pill connected';
         } else {
           fsPill.textContent = 'Funscript: Not available';
@@ -511,6 +597,7 @@
             if (typeof p.autoHomeTransition === 'number') state.autoHomeTransition = p.autoHomeTransition;
             if (typeof p.serialResumeDelayMs === 'number') state.serialResumeDelayMs = p.serialResumeDelayMs;
             if (typeof p.smoothResumeFunscript === 'boolean') state.smoothResumeFunscript = p.smoothResumeFunscript;
+            if (typeof p.scheduledPlaySpec === 'string') state.scheduledPlaySpec = p.scheduledPlaySpec;
             if (typeof p.invertScript === 'boolean') state.invertScript = p.invertScript;
             if (typeof p.scriptDelay === 'number') state.scriptDelay = p.scriptDelay;
             if (typeof p.interpolationMode === 'string') state.interpolationMode = p.interpolationMode;
@@ -543,6 +630,7 @@
           autoHomeTransition: state.autoHomeTransition,
           serialResumeDelayMs: state.serialResumeDelayMs,
           smoothResumeFunscript: state.smoothResumeFunscript,
+          scheduledPlaySpec: state.scheduledPlaySpec,
           invertScript: state.invertScript,
           scriptDelay: state.scriptDelay,
           interpolationMode: state.interpolationMode,
@@ -1117,6 +1205,18 @@
         const data = await res.json();
         state.total = data.total;
         state.items = data.items;
+
+        // Prefer server-provided durationMs (from DB scan) to avoid client probing.
+        try {
+          for (const it of state.items) {
+            const id = String(it?.id ?? '');
+            const ms = typeof it?.durationMs === 'number' && Number.isFinite(it.durationMs) && it.durationMs > 0 ? it.durationMs : null;
+            if (!id || ms == null) continue;
+            const sec = ms / 1000;
+            if (Number.isFinite(sec) && sec > 0) state.durationsSec[id] = sec;
+          }
+        } catch {}
+
         renderList();
         renderPager();
         setStatus('Ready');
@@ -1148,6 +1248,8 @@
       function renderList() {
         $('list').innerHTML = state.items.map((it) => {
           const fs = it.hasFunscript ? `<span class='pill tag-good'>funscript</span>` : `<span class='pill tag-bad'>no funscript</span>`;
+          const fsStatsText = it.hasFunscript ? formatFunscriptStats(it.funscriptActionCount, it.funscriptAvgSpeed) : null;
+          const fsStats = fsStatsText ? `<span class='pill tag-muted'>${esc(fsStatsText)}</span>` : '';
           const vr = it.isVr ? `<span class='pill tag-vr'>VR</span>` : '';
           const active = state.current?.id === it.id ? 'active' : '';
           const dur = formatDuration(getDurationSec(it.id) ?? NaN);
@@ -1156,7 +1258,7 @@
             <div style="font-weight:500; margin-bottom:4px; word-break:break-all;">${esc(it.filename)}</div>
             <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
               <span style="opacity:0.7; font-size:0.85em;">${esc(it.mediaType)}</span>
-              ${durTag} ${vr} ${fs}
+              ${durTag} ${vr} ${fs} ${fsStats}
             </div>
           </div>`;
         }).join('');
@@ -1217,6 +1319,7 @@
         state.current = it || { id, filename: id, mediaType: 'video', hasFunscript: false };
         state.funscript = null;
         state.funscriptDerivatives = null;
+        state.funscriptStats = null;
         state.funIndex = -1;
         state.funscriptPointer = -1;
         state.lastFunscriptValue = 0;
@@ -1252,6 +1355,12 @@
           state.funscriptPointer = -1;
           state.lastFunscriptValue = 0;
 
+          try {
+            state.funscriptStats = computeFunscriptStatsFromActions(state.funscript.actions);
+          } catch {
+            state.funscriptStats = null;
+          }
+
           // Precompute derivatives for interpolation methods that need them.
           try {
             state.funscriptDerivatives = computeFunscriptDerivatives(state.funscript.actions);
@@ -1261,6 +1370,7 @@
         } catch {
           state.funscript = null;
           state.funscriptDerivatives = null;
+          state.funscriptStats = null;
         }
 
         setFsPill();
@@ -1717,7 +1827,11 @@
         }
 
         const driveStatus = state.drive ? 'Drive: ON' : 'Drive: OFF';
-        funscriptStatusEl.textContent = `Funscript: loaded (${actions.length} actions) - ${driveStatus}`;
+        const stats = state.funscriptStats;
+        const spTxt = (stats && Number.isFinite(stats.avgSpeed) && stats.avgSpeed >= 0)
+          ? ` · ${stats.avgSpeed.toFixed(stats.avgSpeed >= 10 ? 0 : 1)}%/s`
+          : '';
+        funscriptStatusEl.textContent = `Funscript: loaded (${actions.length} actions${spTxt}) - ${driveStatus}`;
 
         const ms = Number.isFinite(timeMs) ? Math.max(0, timeMs) : 0;
         const itp = interpolatePos(actions, ms, state.funscriptPointer, state.interpolationMode, state.funscriptDerivatives);
@@ -1996,6 +2110,8 @@
         // Update UI from state
         $('invertScriptCheck').checked = state.invertScript;
         $('smoothResumeCheck').checked = state.smoothResumeFunscript;
+        const schedInput = $('scheduledPlaySpecInput');
+        if (schedInput) schedInput.value = String(state.scheduledPlaySpec ?? '');
         $('scriptDelayInput').value = state.scriptDelay;
         const interpSel = $('interpModeSelect');
         if (interpSel) interpSel.value = state.interpolationMode || 'spline';
@@ -2019,6 +2135,7 @@
       $('btnResetSettings').addEventListener('click', () => {
         state.invertScript = false;
         state.smoothResumeFunscript = false;
+        state.scheduledPlaySpec = '0.4';
         state.scriptDelay = 0;
         state.interpolationMode = 'spline';
         state.axisLimits = {
@@ -2032,6 +2149,8 @@
         // Update UI
         $('invertScriptCheck').checked = false;
         $('smoothResumeCheck').checked = false;
+        const schedInput = $('scheduledPlaySpecInput');
+        if (schedInput) schedInput.value = String(state.scheduledPlaySpec ?? '');
         $('scriptDelayInput').value = 0;
         const interpSel = $('interpModeSelect');
         if (interpSel) interpSel.value = 'spline';
@@ -2054,6 +2173,14 @@
         state.smoothResumeFunscript = $('smoothResumeCheck').checked;
         savePrefs();
       });
+
+      const scheduledPlaySpecInput = $('scheduledPlaySpecInput');
+      if (scheduledPlaySpecInput) {
+        scheduledPlaySpecInput.addEventListener('input', () => {
+          state.scheduledPlaySpec = String(scheduledPlaySpecInput.value || '').trim();
+          savePrefs();
+        });
+      }
 
       $('scriptDelayInput').addEventListener('input', () => {
         state.scriptDelay = Number($('scriptDelayInput').value) || 0;
@@ -2101,24 +2228,30 @@
         if (!(v instanceof HTMLVideoElement)) return;
         if (state.noVideo) return;
         if (v.paused) {
-          // Coordinated start: schedule the play slightly in the future.
           const clockOffset = typeof state.serverClockOffsetMs === 'number' && Number.isFinite(state.serverClockOffsetMs)
             ? state.serverClockOffsetMs
             : 0;
-          const playAtServerMs = (Date.now() - clockOffset) + 400;
-          const playAt = new Date(playAtServerMs).toISOString();
+          const sched = parseScheduledPlaySpec(state.scheduledPlaySpec, clockOffset);
 
           if (state.current) {
             const fps = 30;
             const timeMs = Math.round((v.currentTime || 0) * 1000);
             const frame = currentFrame(v.currentTime || 0, fps);
-            sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame, playAt }, true, getControlTargetClientId());
+            if (sched) {
+              sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame, playAt: sched.playAt }, true, getControlTargetClientId());
+            } else {
+              sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame }, true, getControlTargetClientId());
+            }
           }
 
-          const playAtLocalMs = playAtServerMs + clockOffset;
           cancelAutoHome();
-          try { v.pause(); } catch {}
-          scheduleLocalPlayAt(v, playAtLocalMs);
+          if (sched) {
+            try { v.pause(); } catch {}
+            scheduleLocalPlayAt(v, sched.playAtLocalMs);
+            return;
+          }
+
+          try { await v.play(); } catch {}
           return;
         } else {
           try { v.pause(); } catch {}
@@ -2308,12 +2441,14 @@
             const clockOffset = typeof state.serverClockOffsetMs === 'number' && Number.isFinite(state.serverClockOffsetMs)
               ? state.serverClockOffsetMs
               : 0;
-            const playAtServerMs = (Date.now() - clockOffset) + 400;
-            const playAt = new Date(playAtServerMs).toISOString();
-            sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame, playAt }, true, getControlTargetClientId());
-            const playAtLocalMs = playAtServerMs + clockOffset;
-            try { v.pause(); } catch {}
-            scheduleLocalPlayAt(v, playAtLocalMs);
+            const sched = parseScheduledPlaySpec(state.scheduledPlaySpec, clockOffset);
+            if (sched) {
+              sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame, playAt: sched.playAt }, true, getControlTargetClientId());
+              try { v.pause(); } catch {}
+              scheduleLocalPlayAt(v, sched.playAtLocalMs);
+              return;
+            }
+            sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame }, true, getControlTargetClientId());
             return;
           }
 

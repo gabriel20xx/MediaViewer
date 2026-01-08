@@ -117,6 +117,16 @@ export function buildApiRouter(opts: {
     const hasFunscriptParam = String(req.query.hasFunscript ?? '').trim();
     const isVrParam = String(req.query.isVr ?? '').trim();
 
+    const sortByRaw = String(req.query.sortBy ?? '').trim().toLowerCase();
+    const sortDirRaw = String(req.query.sortDir ?? '').trim().toLowerCase();
+
+    const minDurationSec = Number(req.query.minDurationSec ?? NaN);
+    const maxDurationSec = Number(req.query.maxDurationSec ?? NaN);
+    const minSpeed = Number(req.query.minSpeed ?? NaN);
+    const maxSpeed = Number(req.query.maxSpeed ?? NaN);
+    const minWidth = Number(req.query.minWidth ?? NaN);
+    const minHeight = Number(req.query.minHeight ?? NaN);
+
     const hasFunscript =
       hasFunscriptParam === '1' || hasFunscriptParam.toLowerCase() === 'true'
         ? true
@@ -141,7 +151,7 @@ export function buildApiRouter(opts: {
     };
 
     if (q) {
-      whereClauses.push(`filename ILIKE '%' || ${add(q)} || '%'`);
+      whereClauses.push(`(filename ILIKE '%' || ${add(q)} || '%' OR COALESCE(title,'') ILIKE '%' || ${add(q)} || '%')`);
     }
     if (mediaType) {
       whereClauses.push(`media_type = ${add(mediaType)}`);
@@ -154,7 +164,46 @@ export function buildApiRouter(opts: {
       whereClauses.push(`is_vr = ${add(isVr)}`);
     }
 
+    if (Number.isFinite(minDurationSec) && minDurationSec > 0) {
+      whereClauses.push(`duration_ms >= ${add(Math.round(minDurationSec * 1000))}`);
+    }
+    if (Number.isFinite(maxDurationSec) && maxDurationSec > 0) {
+      whereClauses.push(`duration_ms <= ${add(Math.round(maxDurationSec * 1000))}`);
+    }
+    if (Number.isFinite(minSpeed) && minSpeed >= 0) {
+      whereClauses.push(`funscript_avg_speed >= ${add(minSpeed)}`);
+    }
+    if (Number.isFinite(maxSpeed) && maxSpeed >= 0) {
+      whereClauses.push(`funscript_avg_speed <= ${add(maxSpeed)}`);
+    }
+    if (Number.isFinite(minWidth) && minWidth > 0) {
+      whereClauses.push(`width >= ${add(Math.round(minWidth))}`);
+    }
+    if (Number.isFinite(minHeight) && minHeight > 0) {
+      whereClauses.push(`height >= ${add(Math.round(minHeight))}`);
+    }
+
     const whereSql = whereClauses.length ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
+    const sortDir = sortDirRaw === 'asc' ? 'ASC' : 'DESC';
+    const sortBy = sortByRaw || 'modified';
+    const orderBySql = (() => {
+      switch (sortBy) {
+        case 'title':
+          return `ORDER BY COALESCE(title, filename) ${sortDir} NULLS LAST, modified_ms DESC`;
+        case 'filename':
+          return `ORDER BY filename ${sortDir} NULLS LAST, modified_ms DESC`;
+        case 'duration':
+          return `ORDER BY duration_ms ${sortDir} NULLS LAST, modified_ms DESC`;
+        case 'speed':
+          return `ORDER BY funscript_avg_speed ${sortDir} NULLS LAST, modified_ms DESC`;
+        case 'resolution':
+          return `ORDER BY (COALESCE(width,0)::bigint * COALESCE(height,0)::bigint) ${sortDir} NULLS LAST, modified_ms DESC`;
+        case 'modified':
+        default:
+          return `ORDER BY modified_ms ${sortDir} NULLS LAST`;
+      }
+    })();
 
     const totalRes = await db.pool.query(
       `SELECT COUNT(*)::bigint AS total FROM media_items ${whereSql}`,
@@ -166,10 +215,10 @@ export function buildApiRouter(opts: {
 
     const itemsRes = await db.pool.query(
       `
-        SELECT id, filename, rel_path, media_type, has_funscript, is_vr, size_bytes, modified_ms
+        SELECT id, filename, title, rel_path, media_type, has_funscript, funscript_action_count, funscript_avg_speed, is_vr, width, height, duration_ms, size_bytes, modified_ms
         FROM media_items
         ${whereSql}
-        ORDER BY modified_ms DESC
+        ${orderBySql}
         LIMIT $${listParams.length - 1} OFFSET $${listParams.length}
       `,
       listParams
@@ -182,10 +231,16 @@ export function buildApiRouter(opts: {
       items: itemsRes.rows.map((m) => ({
         id: m.id as string,
         filename: m.filename as string,
+        title: (m.title as string) ?? null,
         relPath: m.rel_path as string,
         mediaType: m.media_type as string,
         hasFunscript: Boolean(m.has_funscript),
+        funscriptActionCount: typeof m.funscript_action_count === 'number' ? m.funscript_action_count : null,
+        funscriptAvgSpeed: typeof m.funscript_avg_speed === 'number' ? m.funscript_avg_speed : null,
         isVr: Boolean(m.is_vr),
+        width: typeof m.width === 'number' ? m.width : null,
+        height: typeof m.height === 'number' ? m.height : null,
+        durationMs: typeof m.duration_ms === 'number' ? m.duration_ms : null,
         sizeBytes: String(m.size_bytes),
         modifiedMs: String(m.modified_ms),
       })),
@@ -339,7 +394,7 @@ export function buildApiRouter(opts: {
   router.get('/media/:id/fileinfo', async (req, res) => {
     const id = req.params.id;
     const itemRes = await db.pool.query(
-      `SELECT id, filename, rel_path, media_type, has_funscript, is_vr FROM media_items WHERE id = $1 LIMIT 1`,
+      `SELECT id, filename, title, rel_path, media_type, has_funscript, funscript_action_count, funscript_avg_speed, is_vr, width, height, duration_ms FROM media_items WHERE id = $1 LIMIT 1`,
       [id]
     );
     const item = itemRes.rows[0];
@@ -351,10 +406,16 @@ export function buildApiRouter(opts: {
       res.json({
         id: item.id,
         filename: item.filename,
+        title: (item.title as string) ?? null,
         relPath: item.rel_path,
         mediaType: item.media_type,
         hasFunscript: Boolean(item.has_funscript),
+        funscriptActionCount: typeof item.funscript_action_count === 'number' ? item.funscript_action_count : null,
+        funscriptAvgSpeed: typeof item.funscript_avg_speed === 'number' ? item.funscript_avg_speed : null,
         isVr: Boolean(item.is_vr),
+        width: typeof item.width === 'number' ? item.width : null,
+        height: typeof item.height === 'number' ? item.height : null,
+        durationMs: typeof item.duration_ms === 'number' ? item.duration_ms : null,
         sizeBytes: stat.size,
         modifiedMs: stat.mtimeMs,
       });

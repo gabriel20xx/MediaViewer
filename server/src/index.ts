@@ -336,6 +336,7 @@ function registerWsHandlers() {
       // Targeted control: route directly to a single client without updating global session state.
       if (toClientId) {
         if (paused) sessionPlayAt.delete(sessionId);
+        if (!paused && playAtRaw === undefined) sessionPlayAt.delete(sessionId);
         const scheduled = !paused ? sessionPlayAt.get(sessionId) : undefined;
         sendSyncStateToClient(sessionId, toClientId, {
           mediaId,
@@ -351,6 +352,7 @@ function registerWsHandlers() {
       }
 
       if (paused) sessionPlayAt.delete(sessionId);
+      if (!paused && playAtRaw === undefined) sessionPlayAt.delete(sessionId);
 
       await upsertSyncPlaybackState(db, {
         sessionId,

@@ -4,6 +4,7 @@ import { loadFunscriptIfExists } from './funscript.js';
 import type { Db } from './db.js';
 import { newId } from './ids.js';
 import { probeVrWithFfprobe } from './ffprobe.js';
+import { probeDurationMsWithFfprobe } from './ffprobe.js';
 
 function mediaTypeFromExt(ext: string): string {
   const e = ext.toLowerCase();
@@ -53,6 +54,36 @@ function isVrFromRelPath(relPath: string): boolean {
   return false;
 }
 
+function computeFunscriptStats(fun: { actions: Array<{ at: number; pos: number }> } | null): {
+  actionCount: number | null;
+  avgSpeed: number | null;
+} {
+  if (!fun || !Array.isArray(fun.actions) || fun.actions.length < 2) {
+    return { actionCount: fun && Array.isArray(fun.actions) ? fun.actions.length : null, avgSpeed: null };
+  }
+
+  const actions = fun.actions;
+  let totalDp = 0;
+  let totalDtMs = 0;
+
+  for (let i = 1; i < actions.length; i++) {
+    const a = actions[i - 1];
+    const b = actions[i];
+    const dt = Math.max(0, Math.round(Number(b.at) - Number(a.at)));
+    if (dt <= 0) continue;
+    const dp = Math.abs(Number(b.pos) - Number(a.pos));
+    if (!Number.isFinite(dp)) continue;
+    totalDp += dp;
+    totalDtMs += dt;
+  }
+
+  const avgSpeed = totalDtMs > 0 ? (totalDp / totalDtMs) * 1000 : null; // % per second
+  return {
+    actionCount: actions.length,
+    avgSpeed: typeof avgSpeed === 'number' && Number.isFinite(avgSpeed) ? avgSpeed : null,
+  };
+}
+
 export async function upsertMediaFromDisk(opts: {
   db: Db;
   mediaRoot: string;
@@ -80,16 +111,24 @@ export async function upsertMediaFromDisk(opts: {
     const stat = await fs.stat(absPath);
     const mediaType = mediaTypeFromExt(ext);
 
+    const filename = path.basename(absPath);
+    const title = path.basename(absPath, ext);
+
     // Skip non-media and funscripts themselves.
     if (ext.toLowerCase() === '.funscript') continue;
     if (mediaType === 'other') continue;
 
     const fun = await loadFunscriptIfExists(absPath);
+    const funStats = computeFunscriptStats(fun);
 
     let isVr = false;
     let vrFov: number | null = null;
     let vrStereo: string | null = null;
     let vrProjection: string | null = null;
+
+    let width: number | null = null;
+    let height: number | null = null;
+    let durationMs: number | null = null;
 
     if (mediaType === 'video') {
       const probe = await probeVrWithFfprobe(absPath);
@@ -102,6 +141,13 @@ export async function upsertMediaFromDisk(opts: {
         // Fallback: filename/path heuristic (keeps compatibility with common VR naming conventions).
         isVr = isVrFromRelPath(relPath);
       }
+
+      if (probe) {
+        width = typeof probe.width === 'number' ? probe.width : null;
+        height = typeof probe.height === 'number' ? probe.height : null;
+      }
+
+      durationMs = await probeDurationMsWithFfprobe(absPath);
     }
 
     const sizeBytes = BigInt(stat.size);
@@ -110,18 +156,24 @@ export async function upsertMediaFromDisk(opts: {
     await db.pool.query(
       `
         INSERT INTO media_items (
-          id, rel_path, filename, ext, media_type, size_bytes, modified_ms, has_funscript, is_vr, vr_fov, vr_stereo, vr_projection, updated_at
+          id, rel_path, filename, title, ext, media_type, size_bytes, modified_ms, duration_ms, width, height, has_funscript, funscript_action_count, funscript_avg_speed, is_vr, vr_fov, vr_stereo, vr_projection, updated_at
         ) VALUES (
-          $1, $2, $3, $4, $5, $6::bigint, $7::bigint, $8, $9, $10, $11, $12, now()
+          $1, $2, $3, $4, $5, $6, $7::bigint, $8::bigint, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, now()
         )
         ON CONFLICT (rel_path)
         DO UPDATE SET
           filename = EXCLUDED.filename,
+          title = EXCLUDED.title,
           ext = EXCLUDED.ext,
           media_type = EXCLUDED.media_type,
           size_bytes = EXCLUDED.size_bytes,
           modified_ms = EXCLUDED.modified_ms,
+          duration_ms = EXCLUDED.duration_ms,
+          width = EXCLUDED.width,
+          height = EXCLUDED.height,
           has_funscript = EXCLUDED.has_funscript,
+          funscript_action_count = EXCLUDED.funscript_action_count,
+          funscript_avg_speed = EXCLUDED.funscript_avg_speed,
           is_vr = EXCLUDED.is_vr,
           vr_fov = EXCLUDED.vr_fov,
           vr_stereo = EXCLUDED.vr_stereo,
@@ -131,12 +183,18 @@ export async function upsertMediaFromDisk(opts: {
       [
         newId(),
         relPath,
-        path.basename(absPath),
+        filename,
+        title,
         ext,
         mediaType,
         sizeBytes.toString(),
         modifiedMs.toString(),
+        durationMs,
+        width,
+        height,
         Boolean(fun),
+        funStats.actionCount,
+        funStats.avgSpeed,
         isVr,
         vrFov,
         vrStereo,

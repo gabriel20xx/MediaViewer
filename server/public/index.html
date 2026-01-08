@@ -15,8 +15,13 @@
         funFilter: 'all', // all | with | without
         vrFilter: 'all', // all | vr | nonvr
         gridMin: 180,
-        sort: 'newest', // newest | lenAsc | lenDesc
+        sort: 'newest',
         lenMinSec: 0,
+        lenMaxSec: 0,
+        speedMin: null,
+        speedMax: null,
+        minHeight: 0,
+        scheduledPlaySpec: '0.4',
         durationsSec: {},
         thumbCache: {},
         _durToken: 0,
@@ -90,6 +95,13 @@
             if (typeof prefs.gridMin === 'number' && prefs.gridMin >= 120 && prefs.gridMin <= 360) {
               state.gridMin = prefs.gridMin;
             }
+            if (typeof prefs.sort === 'string') state.sort = prefs.sort;
+            if (typeof prefs.lenMinSec === 'number') state.lenMinSec = prefs.lenMinSec;
+            if (typeof prefs.lenMaxSec === 'number') state.lenMaxSec = prefs.lenMaxSec;
+            if (typeof prefs.speedMin === 'number') state.speedMin = prefs.speedMin;
+            if (typeof prefs.speedMax === 'number') state.speedMax = prefs.speedMax;
+            if (typeof prefs.minHeight === 'number') state.minHeight = prefs.minHeight;
+            if (typeof prefs.scheduledPlaySpec === 'string') state.scheduledPlaySpec = prefs.scheduledPlaySpec;
           }
         } catch {
           // ignore parse errors
@@ -100,30 +112,13 @@
         try {
           window.localStorage.setItem('mvPrefs', JSON.stringify({
             gridMin: state.gridMin,
-          }));
-        } catch {
-          // ignore storage errors
-        }
-      }
-
-      function loadPrefs() {
-        try {
-          const saved = window.localStorage.getItem('mvPrefs');
-          if (saved) {
-            const prefs = JSON.parse(saved);
-            if (typeof prefs.gridMin === 'number' && prefs.gridMin >= 120 && prefs.gridMin <= 360) {
-              state.gridMin = prefs.gridMin;
-            }
-          }
-        } catch {
-          // ignore parse errors
-        }
-      }
-
-      function savePrefs() {
-        try {
-          window.localStorage.setItem('mvPrefs', JSON.stringify({
-            gridMin: state.gridMin,
+            sort: state.sort,
+            lenMinSec: state.lenMinSec,
+            lenMaxSec: state.lenMaxSec,
+            speedMin: state.speedMin,
+            speedMax: state.speedMax,
+            minHeight: state.minHeight,
+            scheduledPlaySpec: state.scheduledPlaySpec,
           }));
         } catch {
           // ignore storage errors
@@ -200,6 +195,49 @@
         }, delayMs);
       }
 
+      function parseScheduledPlaySpec(spec, clockOffsetMs) {
+        const s = String(spec ?? '').trim();
+        if (!s) return null;
+        if (s.toLowerCase() === 'off' || s.toLowerCase() === 'none' || s === '0') return null;
+
+        const offset = Number(clockOffsetMs) || 0;
+
+        // Relative seconds (e.g. "0.4" or "5")
+        if (/^\+?\d+(?:\.\d+)?$/.test(s)) {
+          const sec = Number(s);
+          if (!Number.isFinite(sec) || sec <= 0) return null;
+          const playAtLocalMs = Date.now() + Math.round(sec * 1000);
+          const playAtServerMs = playAtLocalMs - offset;
+          return { playAt: new Date(playAtServerMs).toISOString(), playAtLocalMs };
+        }
+
+        // Fixed local time-of-day (HH:MM[:SS])
+        const m = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(s);
+        if (m) {
+          const hh = Math.max(0, Math.min(23, Number(m[1])));
+          const mm = Math.max(0, Math.min(59, Number(m[2])));
+          const ss = Math.max(0, Math.min(59, Number(m[3] ?? 0)));
+          const now = new Date();
+          const target = new Date(now);
+          target.setHours(hh, mm, ss, 0);
+          if (target.getTime() <= now.getTime() + 50) target.setDate(target.getDate() + 1);
+          const playAtLocalMs = target.getTime();
+          const playAtServerMs = playAtLocalMs - offset;
+          return { playAt: new Date(playAtServerMs).toISOString(), playAtLocalMs };
+        }
+
+        // Fixed absolute date/time (ISO or anything Date.parse accepts)
+        const parsed = Date.parse(s);
+        if (!Number.isNaN(parsed)) {
+          const playAtLocalMs = parsed;
+          if (!Number.isFinite(playAtLocalMs) || playAtLocalMs <= Date.now() + 50) return null;
+          const playAtServerMs = playAtLocalMs - offset;
+          return { playAt: new Date(playAtServerMs).toISOString(), playAtLocalMs };
+        }
+
+        return null;
+      }
+
       async function getItemInfo(id) {
         const found = state.items.find((x) => x.id === id);
         if (found) return found;
@@ -212,6 +250,12 @@
             mediaType: info.mediaType,
             hasFunscript: info.hasFunscript,
             isVr: info.isVr,
+            title: info.title,
+            durationMs: info.durationMs,
+            width: info.width,
+            height: info.height,
+            funscriptActionCount: info.funscriptActionCount,
+            funscriptAvgSpeed: info.funscriptAvgSpeed,
           };
         } catch {
           return { id, filename: '', relPath: '', mediaType: 'video', hasFunscript: false, isVr: false };
@@ -363,7 +407,6 @@
       }
 
       async function loadList() {
-        const q = encodeURIComponent(state.q);
         const params = new URLSearchParams();
         params.set('q', state.q);
         params.set('page', String(state.page));
@@ -373,6 +416,34 @@
         if (state.funFilter === 'without') params.set('hasFunscript', '0');
         if (state.vrFilter === 'vr') params.set('isVr', '1');
         if (state.vrFilter === 'nonvr') params.set('isVr', '0');
+
+        if (Number.isFinite(state.lenMinSec) && state.lenMinSec > 0) params.set('minDurationSec', String(state.lenMinSec));
+        if (Number.isFinite(state.lenMaxSec) && state.lenMaxSec > 0) params.set('maxDurationSec', String(state.lenMaxSec));
+
+        if (typeof state.speedMin === 'number' && Number.isFinite(state.speedMin)) params.set('minSpeed', String(state.speedMin));
+        if (typeof state.speedMax === 'number' && Number.isFinite(state.speedMax)) params.set('maxSpeed', String(state.speedMax));
+        if (Number.isFinite(state.minHeight) && state.minHeight > 0) params.set('minHeight', String(state.minHeight));
+
+        const sort = String(state.sort || 'newest');
+        const setSort = (sortBy, sortDir) => {
+          params.set('sortBy', sortBy);
+          params.set('sortDir', sortDir);
+        };
+        switch (sort) {
+          case 'oldest': setSort('modified', 'asc'); break;
+          case 'titleAsc': setSort('title', 'asc'); break;
+          case 'titleDesc': setSort('title', 'desc'); break;
+          case 'lenAsc': setSort('duration', 'asc'); break;
+          case 'lenDesc': setSort('duration', 'desc'); break;
+          case 'speedAsc': setSort('speed', 'asc'); break;
+          case 'speedDesc': setSort('speed', 'desc'); break;
+          case 'resAsc': setSort('resolution', 'asc'); break;
+          case 'resDesc': setSort('resolution', 'desc'); break;
+          case 'newest':
+          default:
+            setSort('modified', 'desc');
+            break;
+        }
 
         const data = await apiJson(`/api/media?${params.toString()}`);
         state.total = data.total;
@@ -420,6 +491,38 @@
         }
       }
 
+      function formatFunscriptStats(actionCount, avgSpeed) {
+        const cnt = Number(actionCount);
+        const sp = Number(avgSpeed);
+        if (!Number.isFinite(cnt) || cnt <= 0) return 'None';
+        if (Number.isFinite(sp) && sp >= 0) {
+          const spTxt = sp.toFixed(sp >= 10 ? 0 : 1);
+          return `${Math.round(cnt)} actions · ${spTxt}%/s`;
+        }
+        return `${Math.round(cnt)} actions`;
+      }
+
+      function computeFunscriptStatsFromActions(actions) {
+        if (!Array.isArray(actions) || actions.length === 0) return null;
+        let totalAbsDeltaPos = 0;
+        let totalDtMs = 0;
+        for (let i = 1; i < actions.length; i++) {
+          const a0 = actions[i - 1];
+          const a1 = actions[i];
+          const t0 = Number(a0?.at);
+          const t1 = Number(a1?.at);
+          const p0 = Number(a0?.pos);
+          const p1 = Number(a1?.pos);
+          if (!Number.isFinite(t0) || !Number.isFinite(t1) || !Number.isFinite(p0) || !Number.isFinite(p1)) continue;
+          const dt = t1 - t0;
+          if (!(dt > 0)) continue;
+          totalDtMs += dt;
+          totalAbsDeltaPos += Math.abs(p1 - p0);
+        }
+        const avgSpeed = totalDtMs > 0 ? (totalAbsDeltaPos / totalDtMs) * 1000 : 0;
+        return { actionCount: actions.length, avgSpeed };
+      }
+
       function updateSyncStatus() {
         const elSync = document.getElementById('syncStatus');
         if (!elSync) return;
@@ -440,33 +543,15 @@
       }
 
       function getDurationSec(id) {
-        const v = state.durationsSec[id];
-        return Number.isFinite(v) ? v : null;
+        const fromCache = state.durationsSec[id];
+        if (Number.isFinite(fromCache)) return fromCache;
+        const it = state.items.find((x) => x.id === id);
+        const ms = it && typeof it.durationMs === 'number' && Number.isFinite(it.durationMs) ? it.durationMs : null;
+        return ms && ms > 0 ? ms / 1000 : null;
       }
 
       function getGridItems() {
-        let items = [...state.items];
-        if (state.lenMinSec > 0) {
-          items = items.filter((it) => {
-            const d = getDurationSec(it.id);
-            return d !== null && d >= state.lenMinSec;
-          });
-        }
-
-        if (state.sort === 'lenAsc' || state.sort === 'lenDesc') {
-          const dir = state.sort === 'lenAsc' ? 1 : -1;
-          items.sort((a, b) => {
-            const da = getDurationSec(a.id);
-            const db = getDurationSec(b.id);
-
-            if (da === null && db === null) return 0;
-            if (da === null) return 1;
-            if (db === null) return -1;
-            return (da - db) * dir;
-          });
-        }
-
-        return items;
+        return [...state.items];
       }
 
       function card(item) {
@@ -480,6 +565,19 @@
 
         const durationTag = item.mediaType === 'video'
           ? `<span class="tag mvLen" data-id="${item.id}">${formatDuration(getDurationSec(item.id) ?? NaN)}</span>`
+          : '';
+
+        const resTag = (item.mediaType === 'video' && Number.isFinite(item.width) && Number.isFinite(item.height) && item.width > 0 && item.height > 0)
+          ? `<span class="tag">${Math.round(item.width)}x${Math.round(item.height)}</span>`
+          : '';
+
+        const fsStats = item.hasFunscript && Number.isFinite(item.funscriptActionCount) && item.funscriptActionCount > 0
+          ? (() => {
+              const cnt = Math.round(item.funscriptActionCount);
+              const sp = Number.isFinite(item.funscriptAvgSpeed) && item.funscriptAvgSpeed >= 0 ? item.funscriptAvgSpeed : null;
+              const spTxt = sp === null ? '' : ` · ${sp.toFixed(sp >= 10 ? 0 : 1)}%/s`;
+              return `<span class="tag">${cnt} actions${spTxt}</span>`;
+            })()
           : '';
 
         // Use server-side generated thumbnail for video.
@@ -505,7 +603,7 @@
             </div>
             <div class="meta">
               <div class="name">${escapeHtml(item.filename)}</div>
-              <div class="tags">${tagT}${tagVr}${tagF}${durationTag}</div>
+              <div class="tags">${tagT}${tagVr}${tagF}${durationTag}${resTag}${fsStats}</div>
             </div>
           </div>
         `;
@@ -535,7 +633,7 @@
         el('app').innerHTML = `
           <header>
             <h1>MediaViewer</h1>
-            <div class="search"><input id="q" placeholder="Search by filename" value="${escapeHtml(state.q)}" /></div>
+            <div class="search"><input id="q" placeholder="Search by filename or title" value="${escapeHtml(state.q)}" /></div>
             <select id="pageSize" title="Items per page">
               ${[12, 24, 48, 96].map((n) => `<option value="${n}" ${n === state.pageSize ? 'selected' : ''}>${n}/page</option>`).join('')}
             </select>
@@ -551,8 +649,15 @@
             </select>
             <select id="sort" title="Sort">
               <option value="newest" ${state.sort === 'newest' ? 'selected' : ''}>Newest</option>
+              <option value="oldest" ${state.sort === 'oldest' ? 'selected' : ''}>Oldest</option>
+              <option value="titleAsc" ${state.sort === 'titleAsc' ? 'selected' : ''}>Title (A → Z)</option>
+              <option value="titleDesc" ${state.sort === 'titleDesc' ? 'selected' : ''}>Title (Z → A)</option>
               <option value="lenAsc" ${state.sort === 'lenAsc' ? 'selected' : ''}>Length (short → long)</option>
               <option value="lenDesc" ${state.sort === 'lenDesc' ? 'selected' : ''}>Length (long → short)</option>
+              <option value="speedAsc" ${state.sort === 'speedAsc' ? 'selected' : ''}>Speed (slow → fast)</option>
+              <option value="speedDesc" ${state.sort === 'speedDesc' ? 'selected' : ''}>Speed (fast → slow)</option>
+              <option value="resAsc" ${state.sort === 'resAsc' ? 'selected' : ''}>Resolution (low → high)</option>
+              <option value="resDesc" ${state.sort === 'resDesc' ? 'selected' : ''}>Resolution (high → low)</option>
             </select>
             <select id="lenMin" title="Minimum length">
               <option value="0" ${state.lenMinSec === 0 ? 'selected' : ''}>Any length</option>
@@ -561,6 +666,37 @@
               <option value="600" ${state.lenMinSec === 600 ? 'selected' : ''}>>= 10 min</option>
               <option value="1200" ${state.lenMinSec === 1200 ? 'selected' : ''}>>= 20 min</option>
               <option value="1800" ${state.lenMinSec === 1800 ? 'selected' : ''}>>= 30 min</option>
+            </select>
+            <select id="lenMax" title="Maximum length">
+              <option value="0" ${state.lenMaxSec === 0 ? 'selected' : ''}>Any max</option>
+              <option value="120" ${state.lenMaxSec === 120 ? 'selected' : ''}<= 2 min</option>
+              <option value="300" ${state.lenMaxSec === 300 ? 'selected' : ''}<= 5 min</option>
+              <option value="600" ${state.lenMaxSec === 600 ? 'selected' : ''}<= 10 min</option>
+              <option value="1200" ${state.lenMaxSec === 1200 ? 'selected' : ''}<= 20 min</option>
+              <option value="1800" ${state.lenMaxSec === 1800 ? 'selected' : ''}<= 30 min</option>
+              <option value="3600" ${state.lenMaxSec === 3600 ? 'selected' : ''}<= 60 min</option>
+            </select>
+            <select id="speedMin" title="Minimum funscript speed">
+              <option value="" ${state.speedMin === null ? 'selected' : ''}>Any speed</option>
+              <option value="1" ${state.speedMin === 1 ? 'selected' : ''}>>= 1%/s</option>
+              <option value="2" ${state.speedMin === 2 ? 'selected' : ''}>>= 2%/s</option>
+              <option value="5" ${state.speedMin === 5 ? 'selected' : ''}>>= 5%/s</option>
+              <option value="10" ${state.speedMin === 10 ? 'selected' : ''}>>= 10%/s</option>
+            </select>
+            <select id="speedMax" title="Maximum funscript speed">
+              <option value="" ${state.speedMax === null ? 'selected' : ''}>Any max</option>
+              <option value="1" ${state.speedMax === 1 ? 'selected' : ''}<= 1%/s</option>
+              <option value="2" ${state.speedMax === 2 ? 'selected' : ''}<= 2%/s</option>
+              <option value="5" ${state.speedMax === 5 ? 'selected' : ''}<= 5%/s</option>
+              <option value="10" ${state.speedMax === 10 ? 'selected' : ''}<= 10%/s</option>
+              <option value="20" ${state.speedMax === 20 ? 'selected' : ''}<= 20%/s</option>
+            </select>
+            <select id="minHeight" title="Minimum resolution height">
+              <option value="0" ${state.minHeight === 0 ? 'selected' : ''}>Any res</option>
+              <option value="720" ${state.minHeight === 720 ? 'selected' : ''}>= 720p</option>
+              <option value="1080" ${state.minHeight === 1080 ? 'selected' : ''}>= 1080p</option>
+              <option value="1440" ${state.minHeight === 1440 ? 'selected' : ''}>= 1440p</option>
+              <option value="2160" ${state.minHeight === 2160 ? 'selected' : ''}>= 2160p</option>
             </select>
             <button class="btn" id="gridDec" title="Smaller grid">-</button>
             <button class="btn" id="gridInc" title="Larger grid">+</button>
@@ -617,11 +753,53 @@
 
         el('sort').addEventListener('change', async (e) => {
           state.sort = e.target.value;
+          state.page = 1;
+          savePrefs();
+          await loadList();
           render();
         });
 
         el('lenMin').addEventListener('change', async (e) => {
           state.lenMinSec = Number(e.target.value) || 0;
+          state.page = 1;
+          savePrefs();
+          await loadList();
+          render();
+        });
+
+        el('lenMax').addEventListener('change', async (e) => {
+          state.lenMaxSec = Number(e.target.value) || 0;
+          state.page = 1;
+          savePrefs();
+          await loadList();
+          render();
+        });
+
+        el('speedMin').addEventListener('change', async (e) => {
+          const v = String(e.target.value || '').trim();
+          state.speedMin = v ? Number(v) : null;
+          if (typeof state.speedMin === 'number' && !Number.isFinite(state.speedMin)) state.speedMin = null;
+          state.page = 1;
+          savePrefs();
+          await loadList();
+          render();
+        });
+
+        el('speedMax').addEventListener('change', async (e) => {
+          const v = String(e.target.value || '').trim();
+          state.speedMax = v ? Number(v) : null;
+          if (typeof state.speedMax === 'number' && !Number.isFinite(state.speedMax)) state.speedMax = null;
+          state.page = 1;
+          savePrefs();
+          await loadList();
+          render();
+        });
+
+        el('minHeight').addEventListener('change', async (e) => {
+          state.minHeight = Number(e.target.value) || 0;
+          state.page = 1;
+          savePrefs();
+          await loadList();
           render();
         });
 
@@ -897,11 +1075,6 @@
         });
 
         await Promise.all(workers);
-
-        // If sorting/filtering depends on duration, re-render once after probes.
-        if (token === state._durToken && (state.sort !== 'newest' || state.lenMinSec > 0)) {
-          render();
-        }
       }
 
       function probeDuration(id) {
@@ -1033,13 +1206,22 @@
                     <div class="kvRow"><div class="kvKey">Duration</div><div class="kvVal" id="d-dur">Loading…</div></div>
                     <div class="kvRow"><div class="kvKey">Size</div><div class="kvVal" id="d-size">Loading…</div></div>
                     <div class="kvRow"><div class="kvKey">Modified</div><div class="kvVal" id="d-mod">Loading…</div></div>
-                    <div class="kvRow"><div class="kvKey">Funscript</div><div class="kvVal" id="d-fs">${item?.hasFunscript ? 'Loading…' : 'None'}</div></div>
+                    <div class="kvRow"><div class="kvKey">Funscript</div><div class="kvVal" id="d-fs">${item?.hasFunscript ? formatFunscriptStats(item?.funscriptActionCount, item?.funscriptAvgSpeed) : 'None'}</div></div>
+                    <div class="kvRow"><div class="kvKey">Scheduled play</div><div class="kvVal"><input id="schedPlay" placeholder="off | seconds | HH:MM | ISO" value="${escapeHtml(state.scheduledPlaySpec || '')}" /></div></div>
                   </div>
                 </div>
               </aside>
             </div>
           </div>
         `;
+
+        const schedPlayEl = document.getElementById('schedPlay');
+        if (schedPlayEl instanceof HTMLInputElement) {
+          schedPlayEl.addEventListener('change', () => {
+            state.scheduledPlaySpec = String(schedPlayEl.value || '').trim();
+            savePrefs();
+          });
+        }
 
         const v = el('v');
         const fps = 30;
@@ -1051,19 +1233,20 @@
           const frame = Math.max(0, Math.floor((v.currentTime || 0) * fps));
           const force = e && (e.type === 'play' || e.type === 'pause' || e.type === 'seeked');
 
-          // Coordinated start: schedule play a moment in the future so other synced clients can align.
+          // Optional scheduled play: only send playAt when configured.
           if (force && e && e.type === 'play') {
             const clockOffset = typeof state.remoteServerClockOffsetMs === 'number' && Number.isFinite(state.remoteServerClockOffsetMs)
               ? state.remoteServerClockOffsetMs
               : 0;
-            const playAtServerMs = (Date.now() - clockOffset) + 400;
-            const playAt = new Date(playAtServerMs).toISOString();
-            const playAtLocalMs = playAtServerMs + clockOffset;
-
-            sendSyncUpdate({ mediaId, timeMs, paused: false, fps, frame, playAt }, true);
-            try { v.pause(); } catch {}
-            try { v.currentTime = timeMs / 1000; } catch {}
-            scheduleLocalPlayAt(v, playAtLocalMs);
+            const sched = parseScheduledPlaySpec(state.scheduledPlaySpec, clockOffset);
+            if (sched) {
+              sendSyncUpdate({ mediaId, timeMs, paused: false, fps, frame, playAt: sched.playAt }, true);
+              try { v.pause(); } catch {}
+              try { v.currentTime = timeMs / 1000; } catch {}
+              scheduleLocalPlayAt(v, sched.playAtLocalMs);
+              return;
+            }
+            sendSyncUpdate({ mediaId, timeMs, paused: false, fps, frame }, true);
             return;
           }
 
@@ -1079,16 +1262,15 @@
 
         updateSyncStatus();
 
-        // Hydrate fileinfo + duration
-        Promise.all([
-          apiJson(`/api/media/${id}/fileinfo`).catch(() => null),
-          apiJson(`/api/media/${id}/probe`).catch(() => null),
-        ]).then(([info, probe]) => {
+        // Hydrate fileinfo + duration + funscript stats
+        (async () => {
           const rel = document.getElementById('d-rel');
           const dur = document.getElementById('d-dur');
           const size = document.getElementById('d-size');
           const mod = document.getElementById('d-mod');
+          const fs = document.getElementById('d-fs');
 
+          const info = await apiJson(`/api/media/${id}/fileinfo`).catch(() => null);
           if (info) {
             if (rel) rel.textContent = String(info.relPath || '');
             if (size) size.textContent = formatBytes(info.sizeBytes);
@@ -1098,12 +1280,43 @@
             if (mod) mod.textContent = '--';
           }
 
-          if (probe && Number.isFinite(Number(probe.durationMs)) && Number(probe.durationMs) > 0) {
-            if (dur) dur.textContent = formatDuration(Number(probe.durationMs) / 1000);
+          const durMs = (info && Number.isFinite(Number(info.durationMs)) && Number(info.durationMs) > 0)
+            ? Number(info.durationMs)
+            : (item && Number.isFinite(Number(item.durationMs)) && Number(item.durationMs) > 0 ? Number(item.durationMs) : null);
+          if (durMs != null) {
+            if (dur) dur.textContent = formatDuration(durMs / 1000);
           } else {
-            if (dur) dur.textContent = '--:--';
+            const probe = await apiJson(`/api/media/${id}/probe`).catch(() => null);
+            if (probe && Number.isFinite(Number(probe.durationMs)) && Number(probe.durationMs) > 0) {
+              if (dur) dur.textContent = formatDuration(Number(probe.durationMs) / 1000);
+            } else {
+              if (dur) dur.textContent = '--:--';
+            }
           }
-        }).catch(() => {
+
+          if (item?.hasFunscript && fs) {
+            const cnt = info?.funscriptActionCount ?? item?.funscriptActionCount;
+            const sp = info?.funscriptAvgSpeed ?? item?.funscriptAvgSpeed;
+
+            if (Number.isFinite(Number(cnt)) && Number(cnt) > 0) {
+              fs.textContent = formatFunscriptStats(cnt, sp);
+            } else {
+              // Fallback: compute from actual funscript payload if DB fields are missing.
+              fs.textContent = 'Loading…';
+              const j = await apiJson(`/api/media/${id}/funscript`).catch(() => null);
+              if (!j || !Array.isArray(j.actions)) {
+                fs.textContent = 'Unavailable';
+              } else {
+                const stats = computeFunscriptStatsFromActions(j.actions);
+                if (!stats) {
+                  fs.textContent = 'Unavailable';
+                } else {
+                  fs.textContent = formatFunscriptStats(stats.actionCount, stats.avgSpeed);
+                }
+              }
+            }
+          }
+        })().catch(() => {
           const dur = document.getElementById('d-dur');
           const size = document.getElementById('d-size');
           const mod = document.getElementById('d-mod');
@@ -1111,22 +1324,6 @@
           if (size) size.textContent = '--';
           if (mod) mod.textContent = '--';
         });
-
-        // Show if funscript exists.
-        if (item?.hasFunscript) {
-          fetch(`/api/media/${id}/funscript`).then(r => r.ok ? r.json() : null).then((j) => {
-            const fs = document.getElementById('d-fs');
-            if (!fs) return;
-            if (!j) {
-              fs.textContent = 'Unavailable';
-              return;
-            }
-            fs.textContent = `${j.actions?.length ?? 0} actions`;
-          }).catch(() => {
-            const fs = document.getElementById('d-fs');
-            if (fs) fs.textContent = 'Unavailable';
-          });
-        }
       }
 
       function renderVr() {
@@ -1165,7 +1362,24 @@
           const timeMs = Math.round((vvr.currentTime || 0) * 1000);
           const frame = Math.max(0, Math.floor((vvr.currentTime || 0) * fps));
           const force = e && (e.type === 'play' || e.type === 'pause' || e.type === 'seeked');
-          sendSyncUpdate({ mediaId, timeMs, paused: vvr.paused, fps, frame }, force);
+
+          if (force && e && e.type === 'play') {
+            const clockOffset = typeof state.remoteServerClockOffsetMs === 'number' && Number.isFinite(state.remoteServerClockOffsetMs)
+              ? state.remoteServerClockOffsetMs
+              : 0;
+            const sched = parseScheduledPlaySpec(state.scheduledPlaySpec, clockOffset);
+            if (sched) {
+              sendSyncUpdate({ mediaId, timeMs, paused: false, fps, frame, playAt: sched.playAt }, true);
+              try { vvr.pause(); } catch {}
+              try { vvr.currentTime = timeMs / 1000; } catch {}
+              scheduleLocalPlayAt(vvr, sched.playAtLocalMs);
+              return;
+            }
+            sendSyncUpdate({ mediaId, timeMs, paused: false, fps, frame }, true);
+            return;
+          }
+
+          sendSyncUpdate({ mediaId, timeMs, paused: vvr.paused, fps, frame, playAt: vvr.paused ? null : undefined }, force);
         };
 
         if (vvr instanceof HTMLVideoElement) {
