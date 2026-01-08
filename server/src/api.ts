@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import * as fsSync from 'node:fs';
 import express from 'express';
 import mime from 'mime-types';
 import { upsertMediaFromDisk } from './mediaScanner.js';
@@ -370,8 +371,65 @@ export function buildApiRouter(opts: {
     res.setHeader('Content-Disposition', 'inline');
     res.setHeader('Accept-Ranges', 'bytes');
 
-    // Use express's built-in static sender by delegating to res.sendFile (supports range).
-    return res.sendFile(abs);
+    // Streaming media for VR players needs very predictable Range behavior.
+    // Some clients (notably DeoVR) will mark a video as "unsupported" if they receive an
+    // unexpected status/body after a crash/retry (e.g. cached 304, HTML, or inconsistent ranges).
+    res.setHeader('Cache-Control', 'no-store');
+
+    let st: import('node:fs').Stats;
+    try {
+      st = await fs.stat(abs);
+    } catch {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    const size = Number(st.size) || 0;
+    if (!Number.isFinite(size) || size <= 0) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    const range = String(req.get('range') || '').trim();
+    const isHead = String(req.method || '').toUpperCase() === 'HEAD';
+
+    // Single-range support: bytes=start-end
+    const m = /^bytes=(\d+)-(\d*)$/i.exec(range);
+    if (m) {
+      const start = Math.max(0, Number(m[1]));
+      const endRaw = m[2] ? Number(m[2]) : NaN;
+      const end = Number.isFinite(endRaw) ? Math.min(size - 1, Math.max(start, endRaw)) : (size - 1);
+
+      if (!(start >= 0 && start < size && end >= start && end < size)) {
+        res.status(416);
+        res.setHeader('Content-Range', `bytes */${size}`);
+        return res.end();
+      }
+
+      const chunkSize = end - start + 1;
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
+      res.setHeader('Content-Length', String(chunkSize));
+
+      if (isHead) return res.end();
+
+      const stream = fsSync.createReadStream(abs, { start, end });
+      stream.on('error', () => {
+        try { res.destroy(); } catch {}
+      });
+      stream.pipe(res);
+      return;
+    }
+
+    // No Range: stream whole file.
+    res.status(200);
+    res.setHeader('Content-Length', String(size));
+    if (isHead) return res.end();
+
+    const stream = fsSync.createReadStream(abs);
+    stream.on('error', () => {
+      try { res.destroy(); } catch {}
+    });
+    stream.pipe(res);
+    return;
   });
 
   router.get('/media/:id/thumb', async (req, res) => {

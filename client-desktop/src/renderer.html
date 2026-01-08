@@ -193,7 +193,7 @@
 
       <div class="right">
         <div class="column" style="margin-top: 2px;">
-          <div class="small" style="white-space: nowrap; margin-bottom: 4px;">Sync WebUI</div>
+          <div class="small" style="white-space: nowrap; margin-bottom: 4px;">Sync Source</div>
           <select id="followSource" style="width: 100%;"></select>
         </div>
 
@@ -1507,7 +1507,7 @@
           state.followRemote = false;
           savePrefs();
           sel.value = '';
-          unloadCurrentMedia('Sync WebUI source disconnected - set to None - unloading');
+          unloadCurrentMedia('Sync source disconnected - set to None - unloading');
         }
 
         updateFollowButtonUi();
@@ -1553,7 +1553,7 @@
       }
 
       function applyDefaultMuteForSync() {
-        // When Sync is ON (following a WebUI source), mute local audio by default
+        // When Sync is ON (following a source), mute local audio by default
         // to avoid duplicate audio on the same machine.
         const v = $('video');
         if (!(v instanceof HTMLVideoElement)) return;
@@ -1681,7 +1681,17 @@
 
           const src = String(msg.state.fromClientId || '');
           if (src && src !== state.clientId) {
-            state.seenSources.set(src, Date.now());
+            // Only bump "last seen" when this source actually produced a new update.
+            // Otherwise, periodic sync:state broadcasts (triggered by other clients' status)
+            // can keep a VR source (e.g. HereSphere) "alive" forever after it closes.
+            const prev = state.sourceStates.get(src);
+            const prevUpdatedAt = prev && typeof prev.updatedAt === 'string' ? prev.updatedAt : null;
+            const nextUpdatedAt = typeof msg.state.updatedAt === 'string' ? msg.state.updatedAt : null;
+            const isNewUpdate = !prevUpdatedAt || !nextUpdatedAt || nextUpdatedAt !== prevUpdatedAt;
+            if (isNewUpdate || !state.seenSources.has(src)) {
+              state.seenSources.set(src, Date.now());
+            }
+
             // Cache state for this source for instant switching
             state.sourceStates.set(src, msg.state);
             updateFollowSourceOptions();
@@ -3497,7 +3507,7 @@
 
       $('btnFollow').addEventListener('click', () => {
         if (!state.followSource) {
-          // Only togglable when Sync WebUI is not None.
+          // Only togglable when Sync Source is not None.
           updateFollowButtonUi();
           return;
         }
@@ -3552,7 +3562,7 @@
 
         // If changed to None, stop following and unload local playback.
         if (!val) {
-          unloadCurrentMedia('Sync WebUI set to None - unloading');
+          unloadCurrentMedia('Sync source set to None - unloading');
           return;
         }
 
@@ -3562,17 +3572,17 @@
         const uiView = meta && typeof meta.uiView === 'string' ? meta.uiView : '';
         const isPlayerView = uiView === 'player' || uiView === 'vr';
         if (uiView && !isPlayerView) {
-          unloadCurrentMedia(`Sync WebUI changed to ${val} - source is in ${uiView} view - unloading`);
+          unloadCurrentMedia(`Sync source changed to ${val} - source is in ${uiView} view - unloading`);
           return;
         }
 
         // If changed to a specific source, check if we have cached state.
         const cached = state.sourceStates.get(val);
         if (cached) {
-          logToConsole('log', `Sync WebUI changed to ${val} - applying cached state`);
+           logToConsole('log', `Sync source changed to ${val} - applying cached state`);
           applyRemoteSyncState(cached);
         } else {
-             logToConsole('log', `Sync WebUI changed to ${val} - waiting for next update`);
+             logToConsole('log', `Sync source changed to ${val} - waiting for next update`);
         }
       });
 
