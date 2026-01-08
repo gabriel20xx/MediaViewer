@@ -189,22 +189,43 @@ export function registerVrIntegrations(
     const sessionId = String((req.query as any)?.sessionId ?? '').trim();
     const sessionQs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
 
-    res.json({
-      scenes: [
-        {
-          name: 'Library',
-          list: vids.map((v) => ({
-            title: v.filename,
-            // DeoVR docs (Selection Scene shortened format): seconds
-            videoLength: 0,
-            // Prefer the real thumbnail endpoint (jpeg) for app compatibility.
-            thumbnailUrl: `${base}/api/media/${encodeURIComponent(v.id)}/thumb`,
-            video_url: `${base}/deovr/video/${encodeURIComponent(v.id)}${sessionQs}`,
-          })),
-        },
-      ],
-      authorized: '0',
+    const toListItem = (v: { id: string; filename: string }) => ({
+      title: v.filename,
+      // DeoVR docs (Selection Scene shortened format): seconds
+      videoLength: 0,
+      // Prefer the real thumbnail endpoint (jpeg) for app compatibility.
+      thumbnailUrl: `${base}/api/media/${encodeURIComponent(v.id)}/thumb`,
+      video_url: `${base}/deovr/video/${encodeURIComponent(v.id)}${sessionQs}`,
     });
+
+    const sortAz = [...vids].sort((a, b) => String(a.filename).localeCompare(String(b.filename), undefined, { sensitivity: 'base' }));
+    const sortZa = [...sortAz].reverse();
+    const sortOldest = [...vids].reverse();
+
+    const fov180 = vids.filter((v) => inferVrFov(v.filename) === 180);
+    const fov360 = vids.filter((v) => inferVrFov(v.filename) === 360);
+    const stereoSbs = vids.filter((v) => inferStereo(v.filename) === 'sbs');
+    const stereoTb = vids.filter((v) => inferStereo(v.filename) === 'tb');
+    const withFunscript = vids.filter((v) => Boolean((v as any).hasFunscript));
+    const withoutFunscript = vids.filter((v) => !Boolean((v as any).hasFunscript));
+
+    // DeoVR does not document server-driven search/sort/filter controls beyond "scenes" (tabs).
+    // We implement sort/filter as additional scenes so users can browse natively.
+    const scenes = [
+      { name: 'Library', list: vids.map(toListItem) },
+      { name: 'Newest', list: vids.map(toListItem) },
+      { name: 'Oldest', list: sortOldest.map(toListItem) },
+      { name: 'A → Z', list: sortAz.map(toListItem) },
+      { name: 'Z → A', list: sortZa.map(toListItem) },
+      { name: '180°', list: fov180.map(toListItem) },
+      { name: '360°', list: fov360.map(toListItem) },
+      { name: 'SBS', list: stereoSbs.map(toListItem) },
+      { name: 'TB', list: stereoTb.map(toListItem) },
+      { name: 'Funscript', list: withFunscript.map(toListItem) },
+      { name: 'No funscript', list: withoutFunscript.map(toListItem) },
+    ].filter((s) => Array.isArray(s.list) && s.list.length > 0);
+
+    res.json({ scenes, authorized: '0' });
   });
 
   // Per-video deeplink JSON for DeoVR (deovr://https://host/deovr/video/:id)
