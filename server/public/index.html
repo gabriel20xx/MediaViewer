@@ -1482,6 +1482,16 @@
         const tagFun = item?.hasFunscript
           ? `<span class="tag tag--good">funscript</span>`
           : `<span class="tag tag--bad">no funscript</span>`;
+
+        const funPanel = item?.hasFunscript ? `
+          <div class="panel">
+            <div class="panelTitle">Funscript Info</div>
+            <div class="kv" id="fsDetails">
+              <div class="kvRow"><div class="kvKey">Stats</div><div class="kvVal" id="d-fs">${formatFunscriptStats(item?.funscriptActionCount, item?.funscriptAvgSpeed) || 'Loading…'}</div></div>
+            </div>
+          </div>
+        ` : '';
+
         el('app').innerHTML = `
           <header>
             <h1>MediaViewer</h1>
@@ -1500,7 +1510,7 @@
               </div>
               <aside class="playerSide">
                 <div class="panel">
-                  <div class="panelTitle">Details</div>
+                  <div class="panelTitle">Video Info</div>
                   <div class="tags playerTags">${tagVr}${tagFun}</div>
                   <div class="kv" id="details">
                     <div class="kvRow"><div class="kvKey">Filename</div><div class="kvVal">${filename}</div></div>
@@ -1508,10 +1518,10 @@
                     <div class="kvRow"><div class="kvKey">Duration</div><div class="kvVal" id="d-dur">Loading…</div></div>
                     <div class="kvRow"><div class="kvKey">Size</div><div class="kvVal" id="d-size">Loading…</div></div>
                     <div class="kvRow"><div class="kvKey">Modified</div><div class="kvVal" id="d-mod">Loading…</div></div>
-                    <div class="kvRow"><div class="kvKey">Funscript</div><div class="kvVal" id="d-fs">${item?.hasFunscript ? formatFunscriptStats(item?.funscriptActionCount, item?.funscriptAvgSpeed) : 'None'}</div></div>
                     <div class="kvRow"><div class="kvKey">Scheduled play</div><div class="kvVal"><input id="schedPlay" placeholder="off | seconds | HH:MM | ISO" value="${escapeHtml(state.scheduledPlaySpec || '')}" /></div></div>
                   </div>
                 </div>
+                ${funPanel}
               </aside>
             </div>
           </div>
@@ -1564,8 +1574,12 @@
 
         updateSyncStatus();
 
-        // Hydrate fileinfo + duration + funscript stats
-        (async () => {
+        hydrateDetailsPanels(id, item);
+      }
+
+      async function hydrateDetailsPanels(id, item) {
+        // Hydrate fileinfo + duration + (optional) funscript stats.
+        try {
           const rel = document.getElementById('d-rel');
           const dur = document.getElementById('d-dur');
           const size = document.getElementById('d-size');
@@ -1618,19 +1632,34 @@
               }
             }
           }
-        })().catch(() => {
+        } catch {
           const dur = document.getElementById('d-dur');
           const size = document.getElementById('d-size');
           const mod = document.getElementById('d-mod');
           if (dur) dur.textContent = '--:--';
           if (size) size.textContent = '--';
           if (mod) mod.textContent = '--';
-        });
+        }
       }
 
       function renderVr() {
         const id = state.current?.id;
-        const filename = escapeHtml(state.current?.item?.filename || '');
+        const item = state.current?.item;
+        const filename = escapeHtml(item?.filename || '');
+        const tagVr = item?.isVr ? `<span class="tag tag--vr">vr</span>` : '';
+        const tagFun = item?.hasFunscript
+          ? `<span class="tag tag--good">funscript</span>`
+          : `<span class="tag tag--bad">no funscript</span>`;
+
+        const funPanel = item?.hasFunscript ? `
+          <div class="panel">
+            <div class="panelTitle">Funscript Info</div>
+            <div class="kv" id="fsDetails">
+              <div class="kvRow"><div class="kvKey">Stats</div><div class="kvVal" id="d-fs">${formatFunscriptStats(item?.funscriptActionCount, item?.funscriptAvgSpeed) || 'Loading…'}</div></div>
+            </div>
+          </div>
+        ` : '';
+
         el('app').innerHTML = `
           <header>
             <h1>MediaViewer</h1>
@@ -1642,17 +1671,48 @@
               <a href="#" onclick="window.__openPlayer('${id}');return false;">Open Normal</a>
               <span class="small">${filename}</span>
             </div>
-            <div class="small">Uses WebXR via A-Frame. If you have a headset, enter VR from the button.</div>
-            <script src="https://aframe.io/releases/1.6.0/aframe.min.js"><\/script>
-            <a-scene embedded vr-mode-ui="enabled: true">
-              <a-assets>
-                <video id="vvr" crossorigin="anonymous" autoplay loop="false" playsinline webkit-playsinline src="/api/media/${id}/stream"></video>
-              </a-assets>
-              <a-plane position="0 1.6 -2" rotation="0 0 0" width="3.2" height="1.8" material="shader: flat; src: #vvr"></a-plane>
-              <a-camera position="0 1.6 0"></a-camera>
-            </a-scene>
+            <div class="playerLayout">
+              <div class="playerMain">
+                <div class="small">Uses WebXR via A-Frame. If you have a headset, enter VR from the button.</div>
+                <script src="https://aframe.io/releases/1.6.0/aframe.min.js"><\/script>
+                <a-scene embedded vr-mode-ui="enabled: true">
+                  <a-assets>
+                    <video id="vvr" crossorigin="anonymous" autoplay loop="false" playsinline webkit-playsinline src="/api/media/${id}/stream"></video>
+                  </a-assets>
+                  <a-plane position="0 1.6 -2" rotation="0 0 0" width="3.2" height="1.8" material="shader: flat; src: #vvr"></a-plane>
+                  <a-camera position="0 1.6 0"></a-camera>
+                </a-scene>
+                <div class="small playerStatus" id="syncStatus"></div>
+              </div>
+              <aside class="playerSide">
+                <div class="panel">
+                  <div class="panelTitle">Video Info</div>
+                  <div class="tags playerTags">${tagVr}${tagFun}</div>
+                  <div class="kv" id="details">
+                    <div class="kvRow"><div class="kvKey">Filename</div><div class="kvVal">${filename}</div></div>
+                    <div class="kvRow"><div class="kvKey">Path</div><div class="kvVal" id="d-rel">${escapeHtml(item?.relPath || '')}</div></div>
+                    <div class="kvRow"><div class="kvKey">Duration</div><div class="kvVal" id="d-dur">Loading…</div></div>
+                    <div class="kvRow"><div class="kvKey">Size</div><div class="kvVal" id="d-size">Loading…</div></div>
+                    <div class="kvRow"><div class="kvKey">Modified</div><div class="kvVal" id="d-mod">Loading…</div></div>
+                    <div class="kvRow"><div class="kvKey">Scheduled play</div><div class="kvVal"><input id="schedPlay" placeholder="off | seconds | HH:MM | ISO" value="${escapeHtml(state.scheduledPlaySpec || '')}" /></div></div>
+                  </div>
+                </div>
+                ${funPanel}
+              </aside>
+            </div>
           </div>
         `;
+
+        const schedPlayEl = document.getElementById('schedPlay');
+        if (schedPlayEl instanceof HTMLInputElement) {
+          schedPlayEl.addEventListener('change', () => {
+            state.scheduledPlaySpec = String(schedPlayEl.value || '').trim();
+            savePrefs();
+          });
+        }
+
+        updateSyncStatus();
+        hydrateDetailsPanels(id, item);
 
         // Set up sync for VR player
         const vvr = el('vvr');

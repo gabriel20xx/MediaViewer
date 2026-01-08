@@ -49,6 +49,8 @@ select { padding: 10px 12px; border-radius: 8px; border: 1px solid #2a2f3a; back
 .playerStatus { margin-top: 8px; }
 .playerTitle { word-break: break-word; }
 
+.playerSide { display: grid; gap: 12px; }
+
 .panel { border: 1px solid #222; border-radius: 10px; background: #0f1117; padding: 12px; }
 .panelTitle { font-size: 12px; font-weight: 600; color: #fff; margin-bottom: 8px; }
 

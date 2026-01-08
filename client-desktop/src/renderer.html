@@ -195,6 +195,7 @@
         </div>
         <div class="meter-label" id="funscriptLabel">Value: 0% (000)</div>
         <canvas id="funscriptGraph" width="640" height="140" style="width:100%; height:140px; border:1px solid #333; border-radius:8px; background:#0f1117;"></canvas>
+        <canvas id="funscriptOverviewGraph" width="640" height="90" style="width:100%; height:90px; border:1px solid #333; border-radius:8px; background:#0f1117; margin-top:8px;"></canvas>
         <div class="small" id="noVideoHint" style="display:none;">No-video mode: using sync playback time only (no /stream requests).</div>
         <div class="small" id="playback"></div>
       </div>
@@ -1770,6 +1771,173 @@
         ctx.clearRect(0, 0, cssW, cssH);
       }
 
+      function clearFunscriptOverviewGraph() {
+        const canvas = $('funscriptOverviewGraph');
+        if (!(canvas instanceof HTMLCanvasElement)) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = canvas.clientWidth || 640;
+        const cssH = canvas.clientHeight || 90;
+        canvas.width = Math.round(cssW * dpr);
+        canvas.height = Math.round(cssH * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.clearRect(0, 0, cssW, cssH);
+      }
+
+      function getCurrentDurationMsForOverview() {
+        // Prefer actual video duration when available; otherwise fall back to probed duration.
+        const v = $('video');
+        if (!state.noVideo && v instanceof HTMLVideoElement) {
+          const d = Number(v.duration);
+          if (Number.isFinite(d) && d > 0) return Math.round(d * 1000);
+        }
+        const ms = Number(state.durationMs);
+        return Number.isFinite(ms) && ms > 0 ? Math.round(ms) : null;
+      }
+
+      function drawFunscriptOverviewGraph(actions, ms) {
+        const canvas = $('funscriptOverviewGraph');
+        if (!(canvas instanceof HTMLCanvasElement)) return;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        // Light throttle; playhead moves, but we don't need 60fps.
+        const now = Date.now();
+        if (!state._lastFsOverviewDrawAt) state._lastFsOverviewDrawAt = 0;
+        if (now - state._lastFsOverviewDrawAt < 120) return;
+        state._lastFsOverviewDrawAt = now;
+
+        const dpr = window.devicePixelRatio || 1;
+        const cssW = canvas.clientWidth || 640;
+        const cssH = canvas.clientHeight || 90;
+        canvas.width = Math.round(cssW * dpr);
+        canvas.height = Math.round(cssH * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        const padL = 10, padR = 10, padT = 8, padB = 10;
+        const w = cssW - padL - padR;
+        const h = cssH - padT - padB;
+
+        const maxAt = Math.max(0, Math.round(Number(actions[actions.length - 1]?.at) || 0));
+        const dur = getCurrentDurationMsForOverview();
+        const xMax = Math.max(1, dur != null ? dur : 0, maxAt);
+        const xMin = 0;
+
+        const xToPx = (t) => padL + ((t - xMin) / (xMax - xMin)) * w;
+        const yToPx = (p) => padT + (1 - p / 100) * h;
+
+        // Cache the expensive curve rendering to an offscreen canvas.
+        const cacheKey = [
+          Math.round(cssW),
+          Math.round(cssH),
+          Math.round(dpr * 100),
+          xMax,
+          actions.length,
+          maxAt,
+          String(state.interpolationMode || 'spline'),
+        ].join('|');
+
+        if (!state._fsOverviewCache || state._fsOverviewCache.key !== cacheKey) {
+          const off = document.createElement('canvas');
+          off.width = Math.round(cssW * dpr);
+          off.height = Math.round(cssH * dpr);
+          const octx = off.getContext('2d');
+          if (!octx) return;
+          octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+          // Background
+          octx.clearRect(0, 0, cssW, cssH);
+          octx.fillStyle = '#0f1117';
+          octx.fillRect(0, 0, cssW, cssH);
+
+          // Grid
+          octx.strokeStyle = 'rgba(255,255,255,0.05)';
+          octx.lineWidth = 1;
+          octx.setLineDash([3, 6]);
+          for (let i = 1; i < 4; i++) {
+            const yy = padT + (h * i) / 4;
+            octx.beginPath();
+            octx.moveTo(padL, yy);
+            octx.lineTo(padL + w, yy);
+            octx.stroke();
+          }
+          octx.setLineDash([]);
+
+          // Curve stroke uses the same palette as the UI meter.
+          const grad = octx.createLinearGradient(padL, 0, padL + w, 0);
+          grad.addColorStop(0, '#5b8cff');
+          grad.addColorStop(1, '#2cd3a7');
+
+          const sampleCount = Math.max(240, Math.min(1400, Math.round(cssW * 2)));
+          let pointer = -1;
+
+          // Area fill (subtle)
+          octx.beginPath();
+          for (let i = 0; i <= sampleCount; i++) {
+            const t = xMin + ((xMax - xMin) * i) / sampleCount;
+            const r = interpolatePos(actions, t, pointer, state.interpolationMode, state.funscriptDerivatives);
+            pointer = r.idx;
+            const pos = clamp(Number(r.pos) || 0, 0, 100);
+            const px = xToPx(t);
+            const py = yToPx(pos);
+            if (i === 0) octx.moveTo(px, py);
+            else octx.lineTo(px, py);
+          }
+          octx.lineTo(padL + w, padT + h);
+          octx.lineTo(padL, padT + h);
+          octx.closePath();
+          const fillGrad = octx.createLinearGradient(0, padT, 0, padT + h);
+          fillGrad.addColorStop(0, 'rgba(91,140,255,0.16)');
+          fillGrad.addColorStop(1, 'rgba(44,211,167,0.06)');
+          octx.fillStyle = fillGrad;
+          octx.fill();
+
+          // Stroke
+          pointer = -1;
+          octx.beginPath();
+          for (let i = 0; i <= sampleCount; i++) {
+            const t = xMin + ((xMax - xMin) * i) / sampleCount;
+            const r = interpolatePos(actions, t, pointer, state.interpolationMode, state.funscriptDerivatives);
+            pointer = r.idx;
+            const pos = clamp(Number(r.pos) || 0, 0, 100);
+            const px = xToPx(t);
+            const py = yToPx(pos);
+            if (i === 0) octx.moveTo(px, py);
+            else octx.lineTo(px, py);
+          }
+          octx.strokeStyle = grad;
+          octx.lineWidth = 1.75;
+          octx.stroke();
+
+          state._fsOverviewCache = { key: cacheKey, canvas: off };
+        }
+
+        // Blit cached base
+        ctx.clearRect(0, 0, cssW, cssH);
+        if (state._fsOverviewCache?.canvas) {
+          ctx.drawImage(state._fsOverviewCache.canvas, 0, 0, cssW, cssH);
+        }
+
+        // Playhead
+        const clampedMs = Math.max(0, Math.min(xMax, Number(ms) || 0));
+        const cx = xToPx(clampedMs);
+        ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(cx, padT);
+        ctx.lineTo(cx, padT + h);
+        ctx.stroke();
+
+        // Position dot
+        const r = interpolatePos(actions, clampedMs, state.funscriptPointer, state.interpolationMode, state.funscriptDerivatives);
+        const pos = clamp(Number(r.pos) || 0, 0, 100);
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.beginPath();
+        ctx.arc(cx, yToPx(pos), 2.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
       function drawFunscriptGraph(actions, ms) {
         const canvas = $('funscriptGraph');
         if (!(canvas instanceof HTMLCanvasElement)) return;
@@ -1876,6 +2044,7 @@
           state.funscriptPointer = -1;
           state.lastFunscriptValue = 0;
           clearFunscriptGraph();
+          clearFunscriptOverviewGraph();
           return;
         }
 
@@ -1900,6 +2069,7 @@
         funscriptLabelEl.textContent = `${axis}: ${Math.round(pct)}% (${tcodeVal})`;
 
         drawFunscriptGraph(actions, ms);
+        drawFunscriptOverviewGraph(actions, ms);
       }
 
       function formatTime(ms) {
