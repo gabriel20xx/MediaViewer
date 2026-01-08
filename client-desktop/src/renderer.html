@@ -10,7 +10,7 @@
       body { margin: 0; font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; background: #0b0c0f; color: #e6e6e6; }
       header { padding: 12px 16px; border-bottom: 1px solid #222; display: flex; gap: 12px; align-items: center; justify-content: space-between; }
       header h1 { font-size: 14px; margin: 0; }
-      .wrap { display: grid; grid-template-columns: 380px 380px 1fr; height: calc(100vh - 50px); }
+      .wrap { display: grid; grid-template-columns: 380px 380px minmax(0, 50vw); justify-content: start; height: calc(100vh - 50px); }
       .left { border-right: 1px solid #222; padding: 12px; overflow-y: auto; display: grid; gap: 12px; grid-template-rows: auto auto auto 1fr; align-content: start; }
       .middle { border-right: 1px solid #222; padding: 12px; overflow: auto; display: grid; gap: 12px; }
       .right { padding: 12px; overflow: auto; display: grid; gap: 10px; }
@@ -941,9 +941,8 @@
            state.followSource = '';
            savePrefs();
            sel.value = '';
-           // Source disconnected: Unload the video.
-           applyRemoteSyncState({ mediaId: null });
-           logToConsole('log', 'Sync WebUI source disconnected - unloading media');
+           // Source disconnected: stop following, keep local playback.
+           logToConsole('log', 'Sync WebUI source disconnected - set to None');
         }
       }
 
@@ -1079,36 +1078,32 @@
           if (reason) logToConsole('log', reason);
         }
 
-        // Handle empty/null remote state (deselect current media)
-        if (!remote || !remote.mediaId) {
-          unloadCurrentMedia('Remote cleared media - resetting player');
+        // If we're not following, never apply remote state.
+        if (!state.followRemote) return;
+
+        // If followSource is empty ("(None)"), do NOT follow anyone.
+        // Also ignore remote unload/time updates so local playback isn't disrupted.
+        if (!state.followSource) return;
+
+        if (remote && remote.fromClientId && remote.fromClientId === state.clientId) return;
+
+        // Strict checking if a source is selected
+        if (String(remote?.fromClientId || '') !== state.followSource) {
           return;
         }
 
-        if (!state.followRemote) return;
+        const meta = state.clientsMetadata.get(state.followSource);
+        const uiView = meta && typeof meta.uiView === 'string' ? meta.uiView : '';
+        const isPlayerView = uiView === 'player' || uiView === 'vr';
+        if (uiView && !isPlayerView) {
+          // WebUI isn't currently on a play screen; do not auto-load or seek.
+          return;
+        }
 
-        if (remote.fromClientId && remote.fromClientId === state.clientId) return;
-
-        if (state.followSource) {
-          // Strict checking if a source is selected
-          if (String(remote.fromClientId || '') !== state.followSource) {
-             // ... validation
-             return; 
-          }
-
-          const meta = state.clientsMetadata.get(state.followSource);
-          const uiView = meta && typeof meta.uiView === 'string' ? meta.uiView : '';
-          const isPlayerView = uiView === 'player' || uiView === 'vr';
-          if (uiView && !isPlayerView) {
-            // WebUI isn't currently on a play screen; do not auto-load or seek.
-            return;
-          }
-        } else {
-           // If followSource is empty ("(None)"), do NOT follow "any".
-           // User wants strict following if I removed "any".
-           // "Remove the option Any... If current selected source gets disconnected change follow source to none."
-           // This implies default behavior is NOT "follow anyone".
-           return;
+        // Handle empty/null remote state (deselect current media) only when following the selected source.
+        if (!remote || !remote.mediaId) {
+          unloadCurrentMedia('Remote cleared media - resetting player');
+          return;
         }
 
         const id = String(remote.mediaId);
@@ -2601,10 +2596,9 @@
         state.followSource = val;
         savePrefs();
 
-        // If changed to None, unload immediately.
+        // If changed to None, stop following but keep local playback.
         if (!val) {
-          applyRemoteSyncState({ mediaId: null }); // Passing null mediaId triggers unload
-          logToConsole('log', 'Sync WebUI set to None - unloading media');
+          logToConsole('log', 'Sync WebUI set to None');
           return;
         }
 
