@@ -32,6 +32,7 @@
         ws: null,
         wsConnected: false,
         wsSessionId: 'default',
+        clients: [],
         _applyingRemoteUntil: 0,
         _lastSentAt: 0,
         lastRemoteSync: null,
@@ -40,8 +41,138 @@
         remoteProjectedAtMs: 0,
         remoteServerClockOffsetMs: null,
         _scheduledPlayAtLocalMs: 0,
+        _suppressLocalVideoEventsUntil: 0,
+        _pendingSeekSync: null,
         thumbVer: 0,
       };
+
+      function suppressLocalVideoEventsUntil(untilMs) {
+        const t = Number(untilMs) || 0;
+        if (!Number.isFinite(t) || t <= 0) return;
+        state._suppressLocalVideoEventsUntil = Math.max(Number(state._suppressLocalVideoEventsUntil) || 0, t);
+      }
+
+      function isLocalVideoEventSuppressed() {
+        return Date.now() < (Number(state._suppressLocalVideoEventsUntil) || 0);
+      }
+
+      function getFirstDesktopClientId() {
+        try {
+          const clients = Array.isArray(state.clients) ? state.clients : [];
+          const d = clients.find(c => c && typeof c.clientId === 'string' && c.clientId.startsWith('desktop-'));
+          return d ? d.clientId : null;
+        } catch {
+          return null;
+        }
+      }
+
+      function waitForVideoReadyAt(v, targetTimeSeconds, timeoutMs = 6000) {
+        if (!(v instanceof HTMLVideoElement)) return Promise.resolve(false);
+        const target = Number(targetTimeSeconds) || 0;
+        const start = Date.now();
+        return new Promise((resolve) => {
+          let done = false;
+          const finish = (ok) => {
+            if (done) return;
+            done = true;
+            cleanup();
+            resolve(Boolean(ok));
+          };
+          const check = () => {
+            if (done) return;
+            const now = Date.now();
+            if (now - start > timeoutMs) return finish(false);
+            const ct = Number.isFinite(v.currentTime) ? v.currentTime : NaN;
+            const near = Number.isFinite(ct) ? Math.abs(ct - target) < 0.25 : false;
+            const ready = (v.readyState || 0) >= 3; // HAVE_FUTURE_DATA
+            if (!v.seeking && near && ready) return finish(true);
+          };
+          const onEvt = () => check();
+          const timer = window.setInterval(check, 100);
+          function cleanup() {
+            try { window.clearInterval(timer); } catch {}
+            try { v.removeEventListener('seeked', onEvt); } catch {}
+            try { v.removeEventListener('canplay', onEvt); } catch {}
+            try { v.removeEventListener('loadeddata', onEvt); } catch {}
+            try { v.removeEventListener('stalled', onEvt); } catch {}
+          }
+          v.addEventListener('seeked', onEvt);
+          v.addEventListener('canplay', onEvt);
+          v.addEventListener('loadeddata', onEvt);
+          v.addEventListener('stalled', onEvt);
+          check();
+        });
+      }
+
+      async function startSeekSyncAsLeader(v, mediaId, timeMs) {
+        if (!(v instanceof HTMLVideoElement)) return;
+        if (!mediaId) return;
+
+        const peerId = getFirstDesktopClientId();
+        if (!peerId) return;
+
+        const seekMs = Math.max(0, Math.round(Number(timeMs) || 0));
+        const token = `${state.clientId}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+
+        state._pendingSeekSync = { token, peerId, mediaId: String(mediaId), timeMs: seekMs, selfReady: false, peerReady: false };
+        suppressLocalVideoEventsUntil(Date.now() + 7000);
+
+        try { v.pause(); } catch {}
+        try { v.currentTime = seekMs / 1000; } catch {}
+
+        sendSyncUpdate({
+          mediaId: String(mediaId),
+          timeMs: seekMs,
+          paused: true,
+          fps: 30,
+          frame: Math.max(0, Math.floor((seekMs / 1000) * 30)),
+          seekToken: token,
+          seekPhase: 'request',
+          seekWantPlay: true,
+          seekTargetClientId: peerId,
+        }, true, peerId);
+
+        const okSelf = await waitForVideoReadyAt(v, seekMs / 1000, 6000);
+        if (state._pendingSeekSync && state._pendingSeekSync.token === token) {
+          state._pendingSeekSync.selfReady = okSelf;
+        }
+
+        const startWait = Date.now();
+        while (state._pendingSeekSync && state._pendingSeekSync.token === token) {
+          const p = state._pendingSeekSync;
+          if (p.selfReady && p.peerReady) break;
+          if (Date.now() - startWait > 6500) break;
+          await new Promise(r => setTimeout(r, 60));
+        }
+
+        const p = state._pendingSeekSync;
+        if (!p || p.token !== token) return;
+
+        const playAtLocalMs = Date.now() + 650;
+        const offset = (typeof state.remoteServerClockOffsetMs === 'number' && Number.isFinite(state.remoteServerClockOffsetMs))
+          ? state.remoteServerClockOffsetMs
+          : 0;
+        const playAtServerMs = playAtLocalMs - offset;
+        const playAtIso = new Date(playAtServerMs).toISOString();
+
+        sendSyncUpdate({
+          mediaId: p.mediaId,
+          timeMs: p.timeMs,
+          paused: false,
+          fps: 30,
+          frame: Math.max(0, Math.floor((p.timeMs / 1000) * 30)),
+          playAt: playAtIso,
+          seekToken: token,
+          seekPhase: 'commit',
+          seekTargetClientId: p.peerId,
+        }, true, p.peerId);
+
+        try { v.pause(); } catch {}
+        try { v.currentTime = p.timeMs / 1000; } catch {}
+        scheduleLocalPlayAt(v, playAtLocalMs);
+
+        state._pendingSeekSync = null;
+      }
 
       function el(id) { return document.getElementById(id); }
 
@@ -274,23 +405,29 @@
           let msg;
           try { msg = JSON.parse(String(evt.data)); } catch { return; }
           if (!msg || msg.type !== 'sync:state' || !msg.state) return;
+          if (msg.clients && Array.isArray(msg.clients)) {
+            state.clients = msg.clients;
+          }
           applyRemoteSyncState(msg.state);
         });
       }
 
-      function sendSyncUpdate(update, force) {
+      function sendSyncUpdate(update, force, toClientId = null) {
         if (!state.wsConnected || !state.ws || state.ws.readyState !== 1) return;
         if (!force && Date.now() < state._applyingRemoteUntil) return;
         const now = Date.now();
         if (!force && now - state._lastSentAt < 200) return;
         state._lastSentAt = now;
 
-        state.ws.send(JSON.stringify({
+        const payload = {
           type: 'sync:update',
           sessionId: state.wsSessionId,
           clientId: state.clientId,
           ...update,
-        }));
+        };
+        const target = typeof toClientId === 'string' ? toClientId.trim() : '';
+        if (target) payload.toClientId = target;
+        state.ws.send(JSON.stringify(payload));
       }
 
       function scheduleLocalPlayAt(v, playAtLocalMs) {
@@ -302,6 +439,9 @@
         state._scheduledPlayAtLocalMs = when;
         const delayMs = Math.max(0, Math.round(when - Date.now()));
         state._applyingRemoteUntil = Math.max(state._applyingRemoteUntil, when + 1000);
+
+        // Prevent programmatic pause/play from emitting local forced sync events.
+        suppressLocalVideoEventsUntil(when + 1200);
 
         try { v.pause(); } catch {}
         window.setTimeout(() => {
@@ -380,14 +520,23 @@
         if (!remote) return;
         if (remote.fromClientId && remote.fromClientId === state.clientId) return;
 
+        // Seek-sync: leader receives peer ready ACKs.
+        if (remote.seekToken && String(remote.seekPhase) === 'ready') {
+          const pending = state._pendingSeekSync;
+          if (pending && pending.token === remote.seekToken && String(remote.fromClientId || '') === String(pending.peerId || '')) {
+            pending.peerReady = true;
+          }
+          return;
+        }
+
         const prevRemote = state.lastRemoteSync;
         state.lastRemoteSync = remote;
         state.lastRemoteAt = Date.now();
         updateSyncStatus();
 
-        // Do not auto-navigate away from the grid when opening the WebUI.
-        // Sync-following only applies once the user is already in player/vr.
-        if (state.view === 'grid') return;
+        // Do not auto-navigate away from the grid when opening the WebUI,
+        // unless an explicit open request is sent (e.g., from Desktop Sync ON).
+        if (state.view === 'grid' && !remote.openInUi) return;
 
         if (!remote.mediaId) return;
 
@@ -409,6 +558,31 @@
 
         const v = document.getElementById('v') || document.getElementById('vvr');
         if (!(v instanceof HTMLVideoElement)) return;
+
+        // Seek-sync: respond to seek requests by pausing, seeking, buffering, then ACK ready.
+        if (remote.seekToken && String(remote.seekPhase) === 'request') {
+          const target = String(remote.seekTargetClientId || '');
+          if (target && target !== state.clientId) return;
+
+          const seekMs = Math.max(0, Math.round(Number(remote.timeMs) || 0));
+          suppressLocalVideoEventsUntil(Date.now() + 7000);
+          try { v.pause(); } catch {}
+          try { v.currentTime = seekMs / 1000; } catch {}
+          await waitForVideoReadyAt(v, seekMs / 1000, 6000);
+
+          sendSyncUpdate({
+            mediaId: String(remote.mediaId || ''),
+            timeMs: seekMs,
+            paused: true,
+            fps: 30,
+            frame: Math.max(0, Math.floor((seekMs / 1000) * 30)),
+            seekToken: String(remote.seekToken),
+            seekPhase: 'ready',
+            seekWantPlay: Boolean(remote.seekWantPlay),
+            seekTargetClientId: String(remote.fromClientId || ''),
+          }, true, String(remote.fromClientId || '') || null);
+          return;
+        }
 
         // If the user is actively scrubbing/seeking locally, don't fight their interaction.
         if (v.seeking) return;
@@ -1120,29 +1294,41 @@
         el('prev').disabled = state.page <= 1;
         el('next').disabled = state.page >= maxPage;
         el('last').disabled = state.page >= maxPage;
+
+        const scrollToTopSmooth = () => {
+          const main = document.querySelector('main');
+          if (main && typeof main.scrollIntoView === 'function') {
+            try { main.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; } catch {}
+          }
+          try { window.scrollTo({ top: 0, behavior: 'smooth' }); } catch { window.scrollTo(0, 0); }
+        };
         
         el('first').addEventListener('click', async () => {
           state.page = 1;
           await loadList();
           render();
+          scrollToTopSmooth();
         });
         
         el('prev').addEventListener('click', async () => {
           state.page = Math.max(1, state.page - 1);
           await loadList();
           render();
+          scrollToTopSmooth();
         });
         
         el('next').addEventListener('click', async () => {
           state.page = Math.min(maxPage, state.page + 1);
           await loadList();
           render();
+          scrollToTopSmooth();
         });
         
         el('last').addEventListener('click', async () => {
           state.page = maxPage;
           await loadList();
           render();
+          scrollToTopSmooth();
         });
         
         // Page number buttons
@@ -1154,6 +1340,7 @@
               state.page = page;
               await loadList();
               render();
+              scrollToTopSmooth();
             }
           });
         }
@@ -1541,9 +1728,20 @@
 
         const push = (e) => {
           if (!(v instanceof HTMLVideoElement)) return;
+          if (isLocalVideoEventSuppressed()) return;
           const timeMs = Math.round((v.currentTime || 0) * 1000);
           const frame = Math.max(0, Math.floor((v.currentTime || 0) * fps));
           const force = e && (e.type === 'play' || e.type === 'pause' || e.type === 'seeked');
+
+          // Coordinated seek: if a desktop client is connected and we seek while playing,
+          // pause and resync so both ends buffer the new segment before starting together.
+          if (e && e.type === 'seeked' && !v.paused) {
+            const desktopId = getFirstDesktopClientId();
+            if (desktopId) {
+              startSeekSyncAsLeader(v, mediaId, timeMs).catch(() => {});
+              return;
+            }
+          }
 
           // Optional scheduled play: only send playAt when configured.
           if (force && e && e.type === 'play') {
@@ -1721,9 +1919,18 @@
 
         const push = (e) => {
           if (!(vvr instanceof HTMLVideoElement)) return;
+          if (isLocalVideoEventSuppressed()) return;
           const timeMs = Math.round((vvr.currentTime || 0) * 1000);
           const frame = Math.max(0, Math.floor((vvr.currentTime || 0) * fps));
           const force = e && (e.type === 'play' || e.type === 'pause' || e.type === 'seeked');
+
+          if (e && e.type === 'seeked' && !vvr.paused) {
+            const desktopId = getFirstDesktopClientId();
+            if (desktopId) {
+              startSeekSyncAsLeader(vvr, mediaId, timeMs).catch(() => {});
+              return;
+            }
+          }
 
           if (force && e && e.type === 'play') {
             const clockOffset = typeof state.remoteServerClockOffsetMs === 'number' && Number.isFinite(state.remoteServerClockOffsetMs)

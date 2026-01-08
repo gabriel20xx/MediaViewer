@@ -10,7 +10,7 @@
       body { margin: 0; font-family: system-ui, Segoe UI, Roboto, Arial, sans-serif; background: #0b0c0f; color: #e6e6e6; }
       header { padding: 12px 16px; border-bottom: 1px solid #222; display: flex; gap: 12px; align-items: center; justify-content: space-between; }
       header h1 { font-size: 14px; margin: 0; }
-      .wrap { display: grid; grid-template-columns: 380px 380px minmax(0, 50vw); justify-content: start; height: calc(100vh - 50px); }
+      .wrap { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr) minmax(0, 50vw); height: calc(100vh - 50px); }
       .left { border-right: 1px solid #222; padding: 12px; overflow-y: auto; display: grid; gap: 12px; grid-template-rows: auto auto auto 1fr; align-content: start; }
       .middle { border-right: 1px solid #222; padding: 12px; overflow: auto; display: grid; gap: 12px; }
       .right { padding: 12px; overflow: auto; display: grid; gap: 10px; }
@@ -18,10 +18,25 @@
       input, select { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #2a2f3a; background: #11131a; color: #e6e6e6; }
       button { padding: 10px 12px; border-radius: 8px; border: 1px solid #2a2f3a; background: #11131a; color: #e6e6e6; cursor: pointer; }
       button:disabled { opacity: 0.6; cursor: not-allowed; }
-      .list { margin-top: 12px; display: grid; gap: 8px; }
-      .item { border: 1px solid #222; border-radius: 10px; padding: 10px; cursor: pointer; background: #0f1117; white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
-      .item.active { outline: 2px solid #2a2f3a; }
-      .item small { opacity: 0.8; }
+      /* Desktop list: match WebUI card design, but always one column */
+      .list { margin-top: 12px; display: grid; gap: 12px; grid-template-columns: 1fr; }
+      .mvCard { border: 1px solid #222; border-radius: 10px; overflow: hidden; background: #0f1117; display: flex; flex-direction: column; cursor: pointer; }
+      .mvCard:hover { border-color: #2a2f3a; }
+      .mvCard.active { outline: 2px solid #2a2f3a; outline-offset: 2px; }
+      .mvThumb { position: relative; background: #0b0c0f; border-bottom: 1px solid #222; overflow: hidden; }
+      .mvThumb::before { content: ""; display: block; padding-top: 56.25%; }
+      .mvThumbMedia { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; background: #000; }
+      .mvThumbStatus { position: absolute; inset: 0; display: grid; place-items: center; font-size: 12px; opacity: 0.85; background: linear-gradient(to bottom, rgba(0,0,0,0.25), rgba(0,0,0,0.45)); }
+      .mvThumbStatus.hidden { display: none; }
+      .mvMeta { padding: 10px; display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 92px; }
+      .mvName { font-size: 12px; line-height: 1.2; word-break: break-word; }
+      .mvTags { display: flex; gap: 6px; flex-wrap: wrap; align-content: flex-start; }
+      .mvTagBreak { flex-basis: 100%; height: 0; }
+      .mvTag { font-size: 11px; padding: 2px 6px; border-radius: 999px; border: 1px solid #2a2f3a; background: #11131a; }
+      .mvTag--good { border-color: #14532d; background: rgba(20,83,45,0.35); color: #86efac; }
+      .mvTag--bad { border-color: #7f1d1d; background: rgba(127,29,29,0.35); color: #fecaca; }
+      .mvTag--vr { border-color: #8b5cf6; background: rgba(139,92,246,0.35); color: #fff; }
+      .mvTag--muted { border-color: #374151; background: rgba(55,65,81,0.35); color: #d1d5db; }
       video { width: 100%; aspect-ratio: 16 / 9; height: auto; max-height: 70vh; background: #000; object-fit: contain; }
       input[type="range"] { width: 100%; max-width: 100%; padding: 0; border: 0; background: transparent; }
       .small { font-size: 12px; opacity: 0.85; }
@@ -172,18 +187,18 @@
       </div>
 
       <div class="right">
+        <div class="column" style="margin-top: 2px;">
+          <div class="small" style="white-space: nowrap; margin-bottom: 4px;">Sync WebUI</div>
+          <select id="followSource" style="width: 100%;"></select>
+        </div>
+
         <div class="row" style="justify-content: space-between; gap: 12px; flex-wrap: wrap;">
           <div class="small" id="now"></div>
           <div class="row" style="gap: 8px;">
             <button id="btnPlayPause" style="max-width: 140px;">Play/Pause</button>
             <button id="btnVideo" style="max-width: 140px;">Video: ON</button>
-            <button id="btnFollow" style="max-width: 220px;">Follow remote: ON</button>
+            <button id="btnFollow" style="max-width: 220px;">Sync: OFF</button>
           </div>
-        </div>
-
-        <div class="column" style="margin-top: 10px;">
-          <div class="small" style="white-space: nowrap; margin-bottom: 4px;">Sync WebUI</div>
-          <select id="followSource" style="width: 100%;"></select>
         </div>
 
         <video id="video" controls></video>
@@ -355,7 +370,7 @@
         applyingRemoteUntil: 0,
         lastSyncSentAt: 0,
         lastPlaybackPutAt: 0,
-        followRemote: true,
+        followRemote: false,
         noVideo: false,
         noVideoBaseTimeMs: 0,
         noVideoAnchorAtMs: 0,
@@ -382,7 +397,166 @@
 
         consoleLogs: [],
         consoleVisible: false,
+
+        _suppressLocalVideoEventsUntil: 0,
+        _pendingSeekSync: null,
       };
+
+      function updateFollowButtonUi() {
+        const btn = $('btnFollow');
+        if (!(btn instanceof HTMLButtonElement)) return;
+
+        const hasSource = Boolean(String(state.followSource || '').trim());
+        if (!hasSource) {
+          state.followRemote = false;
+          btn.disabled = true;
+          btn.textContent = 'Sync: OFF';
+          return;
+        }
+
+        btn.disabled = false;
+        btn.textContent = state.followRemote ? 'Sync: ON' : 'Sync: OFF';
+      }
+
+      function suppressLocalVideoEventsUntil(untilMs) {
+        const t = Number(untilMs) || 0;
+        if (!Number.isFinite(t) || t <= 0) return;
+        state._suppressLocalVideoEventsUntil = Math.max(Number(state._suppressLocalVideoEventsUntil) || 0, t);
+      }
+
+      function isLocalVideoEventSuppressed() {
+        return Date.now() < (Number(state._suppressLocalVideoEventsUntil) || 0);
+      }
+
+      function ingestServerClockFromState(remote) {
+        try {
+          if (!remote || !remote.updatedAt) return;
+          const nowMs = Date.now();
+          const parsed = Date.parse(String(remote.updatedAt));
+          if (Number.isNaN(parsed)) return;
+          const observedOffset = nowMs - parsed;
+          if (typeof state.serverClockOffsetMs !== 'number' || !Number.isFinite(state.serverClockOffsetMs)) {
+            state.serverClockOffsetMs = observedOffset;
+          } else {
+            state.serverClockOffsetMs = state.serverClockOffsetMs * 0.9 + observedOffset * 0.1;
+          }
+        } catch {}
+      }
+
+      function waitForVideoReadyAt(v, targetTimeSeconds, timeoutMs = 6000) {
+        if (!(v instanceof HTMLVideoElement)) return Promise.resolve(false);
+        const target = Number(targetTimeSeconds) || 0;
+        const start = Date.now();
+        return new Promise((resolve) => {
+          let done = false;
+          const finish = (ok) => {
+            if (done) return;
+            done = true;
+            cleanup();
+            resolve(Boolean(ok));
+          };
+          const check = () => {
+            if (done) return;
+            const now = Date.now();
+            if (now - start > timeoutMs) return finish(false);
+            const ct = Number.isFinite(v.currentTime) ? v.currentTime : NaN;
+            const near = Number.isFinite(ct) ? Math.abs(ct - target) < 0.25 : false;
+            const ready = (v.readyState || 0) >= 3; // HAVE_FUTURE_DATA
+            if (!v.seeking && near && ready) return finish(true);
+          };
+          const onEvt = () => check();
+          const timer = window.setInterval(check, 100);
+          function cleanup() {
+            try { window.clearInterval(timer); } catch {}
+            try { v.removeEventListener('seeked', onEvt); } catch {}
+            try { v.removeEventListener('canplay', onEvt); } catch {}
+            try { v.removeEventListener('loadeddata', onEvt); } catch {}
+            try { v.removeEventListener('stalled', onEvt); } catch {}
+          }
+          v.addEventListener('seeked', onEvt);
+          v.addEventListener('canplay', onEvt);
+          v.addEventListener('loadeddata', onEvt);
+          v.addEventListener('stalled', onEvt);
+          check();
+        });
+      }
+
+      async function startSeekSyncAsLeader(v, timeMs) {
+        if (!(v instanceof HTMLVideoElement)) return;
+        if (!state.current) return;
+        const peerId = getControlTargetClientId();
+        if (!peerId) return;
+
+        const seekMs = Math.max(0, Math.round(Number(timeMs) || 0));
+        const token = `${state.clientId}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+
+        state._pendingSeekSync = {
+          token,
+          peerId,
+          mediaId: state.current.id,
+          timeMs: seekMs,
+          selfReady: false,
+          peerReady: false,
+        };
+
+        // Prevent our own programmatic pause/play from generating forced sync events.
+        suppressLocalVideoEventsUntil(Date.now() + 7000);
+
+        try { v.pause(); } catch {}
+        try { v.currentTime = seekMs / 1000; } catch {}
+
+        sendSyncUpdate({
+          mediaId: state.current.id,
+          timeMs: seekMs,
+          paused: true,
+          fps: 30,
+          frame: currentFrame(seekMs / 1000, 30),
+          seekToken: token,
+          seekPhase: 'request',
+          seekWantPlay: true,
+          seekTargetClientId: peerId,
+        }, true, peerId);
+
+        const okSelf = await waitForVideoReadyAt(v, seekMs / 1000, 6000);
+        if (state._pendingSeekSync && state._pendingSeekSync.token === token) {
+          state._pendingSeekSync.selfReady = okSelf;
+        }
+
+        // Wait for peer ready (or timeout).
+        const startWait = Date.now();
+        while (state._pendingSeekSync && state._pendingSeekSync.token === token) {
+          const p = state._pendingSeekSync;
+          if (p.selfReady && p.peerReady) break;
+          if (Date.now() - startWait > 6500) break;
+          await new Promise(r => setTimeout(r, 60));
+        }
+
+        const p = state._pendingSeekSync;
+        if (!p || p.token !== token) return;
+
+        const playAtLocalMs = Date.now() + 650;
+        const offset = (typeof state.serverClockOffsetMs === 'number' && Number.isFinite(state.serverClockOffsetMs)) ? state.serverClockOffsetMs : 0;
+        const playAtServerMs = playAtLocalMs - offset;
+        const playAtIso = new Date(playAtServerMs).toISOString();
+
+        sendSyncUpdate({
+          mediaId: p.mediaId,
+          timeMs: p.timeMs,
+          paused: false,
+          fps: 30,
+          frame: currentFrame(p.timeMs / 1000, 30),
+          playAt: playAtIso,
+          seekToken: token,
+          seekPhase: 'commit',
+          seekTargetClientId: p.peerId,
+        }, true, p.peerId);
+
+        try { v.pause(); } catch {}
+        try { v.currentTime = p.timeMs / 1000; } catch {}
+        scheduleLocalPlayAt(v, playAtLocalMs);
+
+        state._pendingSeekSync = null;
+      }
 
       // Coordinated start: schedule local play for an exact wall-clock time.
       let _scheduledPlayAtLocalMs = 0;
@@ -395,6 +569,9 @@
         _scheduledPlayAtLocalMs = when;
         const delayMs = Math.max(0, Math.round(when - Date.now()));
         state.applyingRemoteUntil = Math.max(state.applyingRemoteUntil, when + 1000);
+
+        // Prevent programmatic pause/play from emitting local forced sync events.
+        suppressLocalVideoEventsUntil(when + 1200);
         try { v.pause(); } catch {}
         window.setTimeout(() => {
           try { v.play(); } catch {}
@@ -934,13 +1111,16 @@
         sel.innerHTML = html;
 
         // If currently selected source is no longer valid/active, reset to none.
-          if (state.followSource && !state.seenSources.has(state.followSource)) {
-           state.followSource = '';
-           savePrefs();
-           sel.value = '';
-           // Source disconnected: stop following, keep local playback.
-           logToConsole('log', 'Sync WebUI source disconnected - set to None');
+        if (state.followSource && !state.seenSources.has(state.followSource)) {
+          state.followSource = '';
+          state.followRemote = false;
+          savePrefs();
+          sel.value = '';
+          // Source disconnected: stop following, keep local playback.
+          logToConsole('log', 'Sync WebUI source disconnected - set to None');
         }
+
+        updateFollowButtonUi();
       }
 
       function setVideoModeUi() {
@@ -998,6 +1178,9 @@
           let msg;
           try { msg = JSON.parse(String(evt.data)); } catch { return; }
           if (!msg || msg.type !== 'sync:state' || !msg.state) return;
+
+          // Keep an estimate of server clock offset even when we're not actively following.
+          ingestServerClockFromState(msg.state);
 
           // Update clients metadata if provided
           if (msg.clients && Array.isArray(msg.clients)) {
@@ -1075,6 +1258,22 @@
           if (reason) logToConsole('log', reason);
         }
 
+        // Seek-sync handshake messages (request/ready/commit)
+        if (remote && remote.seekToken && remote.seekPhase) {
+          // If targeted and not for us, ignore.
+          const target = String(remote.seekTargetClientId || '');
+          if (target && target !== state.clientId) return;
+
+          // Leader: accept ready acknowledgements.
+          if (String(remote.seekPhase) === 'ready') {
+            const pending = state._pendingSeekSync;
+            if (pending && pending.token === remote.seekToken && String(remote.fromClientId || '') === String(pending.peerId || '')) {
+              pending.peerReady = true;
+            }
+            return;
+          }
+        }
+
         // If we're not following, never apply remote state.
         if (!state.followRemote) return;
 
@@ -1093,7 +1292,46 @@
         const uiView = meta && typeof meta.uiView === 'string' ? meta.uiView : '';
         const isPlayerView = uiView === 'player' || uiView === 'vr';
         if (uiView && !isPlayerView) {
-          // WebUI isn't currently on a play screen; do not auto-load or seek.
+          // If we're following this source and it leaves the play screen (e.g. back to overview),
+          // mirror that by unloading locally.
+          unloadCurrentMedia(`Sync source left player view (${uiView}) - unloading`);
+          return;
+        }
+
+        // Seek-sync request from followed source: pause + seek + buffer + respond ready.
+        if (remote && remote.seekToken && String(remote.seekPhase) === 'request') {
+          const wantPlay = Boolean(remote.seekWantPlay);
+          const seekMs = Math.max(0, Math.round(Number(remote.timeMs) || 0));
+          const id = String(remote.mediaId || '');
+
+          // Ensure media is loaded.
+          if (id && (!state.current || state.current.id !== id)) {
+            const it = state.items.find((x) => x.id === id) || { id, filename: id, mediaType: 'video', hasFunscript: false };
+            await openMedia(it.id, { suppressSync: true });
+          }
+
+          if (!state.noVideo) {
+            const v = $('video');
+            if (v instanceof HTMLVideoElement) {
+              suppressLocalVideoEventsUntil(Date.now() + 7000);
+              try { v.pause(); } catch {}
+              try { v.currentTime = seekMs / 1000; } catch {}
+              await waitForVideoReadyAt(v, seekMs / 1000, 6000);
+            }
+          }
+
+          // Always acknowledge readiness; leader will decide whether/when to play.
+          sendSyncUpdate({
+            mediaId: id,
+            timeMs: seekMs,
+            paused: true,
+            fps: 30,
+            frame: currentFrame(seekMs / 1000, 30),
+            seekToken: String(remote.seekToken),
+            seekPhase: 'ready',
+            seekWantPlay: wantPlay,
+            seekTargetClientId: String(remote.fromClientId || ''),
+          }, true, String(remote.fromClientId || '') || null);
           return;
         }
 
@@ -1206,6 +1444,7 @@
                 try { v.pause(); } catch {}
                 cancelAutoHome();
                 try { v.currentTime = startTimeSeconds; } catch {}
+                suppressLocalVideoEventsUntil(playAtLocalMs + 1200);
                 scheduleLocalPlayAt(v, playAtLocalMs);
               } else {
                 logToConsole('log', 'Pausing video (remote)');
@@ -1214,6 +1453,7 @@
               }
             } else {
               logToConsole('log', 'Playing video (remote)');
+              suppressLocalVideoEventsUntil(Date.now() + 1500);
               try { await v.play(); } catch {}
               cancelAutoHome(); // Cancel auto-home when remotely unpaused
             }
@@ -1280,24 +1520,73 @@
 
       function renderList() {
         $('list').innerHTML = state.items.map((it) => {
-          const fs = it.hasFunscript ? `<span class='pill tag-good'>funscript</span>` : `<span class='pill tag-bad'>no funscript</span>`;
-          const fsStatsText = it.hasFunscript ? formatFunscriptStats(it.funscriptActionCount, it.funscriptAvgSpeed) : null;
-          const fsStats = fsStatsText ? `<span class='pill tag-muted'>${esc(fsStatsText)}</span>` : '';
-          const vr = it.isVr ? `<span class='pill tag-vr'>VR</span>` : '';
           const active = state.current?.id === it.id ? 'active' : '';
+
           const dur = formatDuration(getDurationSec(it.id) ?? NaN);
-          const durTag = dur !== '--:--' ? `<span class='pill tag-muted'>${dur}</span>` : '';
-          return `<div class='item ${active}' data-id='${it.id}'>
-            <div style="font-weight:500; margin-bottom:4px; word-break:break-all;">${esc(it.filename)}</div>
-            <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
-              <span class='pill tag-muted'>${esc(it.mediaType)}</span>
-              ${durTag} ${vr} ${fs} ${fsStats}
+          const durTag = dur !== '--:--' ? `<span class="mvTag">${esc(dur)}</span>` : '';
+          const vr = it.isVr ? `<span class="mvTag mvTag--vr">VR</span>` : '';
+          const fs = it.hasFunscript ? `<span class="mvTag mvTag--good">funscript</span>` : `<span class="mvTag mvTag--bad">no funscript</span>`;
+
+          const sp = Number(it.funscriptAvgSpeed);
+          const fsSpeedTag = it.hasFunscript
+            ? (Number.isFinite(sp) && sp >= 0
+                ? `<span class="mvTag">${sp.toFixed(sp >= 10 ? 0 : 1)}%/s</span>`
+                : `<span class="mvTag">?%/s</span>`)
+            : '';
+
+          const cnt = Number(it.funscriptActionCount);
+          const fsCntTag = it.hasFunscript
+            ? (Number.isFinite(cnt) && cnt > 0
+                ? `<span class="mvTag">${Math.round(cnt)} actions</span>`
+                : `<span class="mvTag">? actions</span>`)
+            : '';
+
+          const thumbUrl = it.mediaType === 'image'
+            ? new URL(`/api/media/${it.id}/stream`, state.serverUrl).toString()
+            : new URL(`/api/media/${it.id}/thumb`, state.serverUrl).toString();
+
+          return `
+            <div class="mvCard ${active}" role="button" tabindex="0" data-id="${esc(it.id)}" aria-label="Open: ${esc(it.filename)}">
+              <div class="mvThumb">
+                <img class="mvThumbMedia" loading="lazy" src="${thumbUrl}" alt="${esc(it.filename)}" />
+                <div class="mvThumbStatus">Loading…</div>
+              </div>
+              <div class="mvMeta">
+                <div class="mvName">${esc(it.filename)}</div>
+                <div class="mvTags">
+                  <span class="mvTag">${esc(it.mediaType)}</span>
+                  ${durTag}
+                  ${vr}
+                  <span class="mvTagBreak"></span>
+                  ${fs}
+                  ${fsSpeedTag}
+                  ${fsCntTag}
+                </div>
+              </div>
             </div>
-          </div>`;
+          `;
         }).join('');
-        const items = $('list').querySelectorAll('.item');
-        for (const div of items) {
-          div.addEventListener('click', () => openMedia(div.getAttribute('data-id')));
+
+        const cards = $('list').querySelectorAll('.mvCard');
+        for (const c of cards) {
+          const id = c.getAttribute('data-id');
+          c.addEventListener('click', () => openMedia(id));
+          c.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              openMedia(id);
+            }
+          });
+        }
+
+        const imgs = $('list').querySelectorAll('img.mvThumbMedia');
+        for (const img of imgs) {
+          const status = img.parentElement?.querySelector('.mvThumbStatus');
+          if (!status) continue;
+          const hide = () => status.classList.add('hidden');
+          img.addEventListener('load', hide, { once: true });
+          img.addEventListener('error', hide, { once: true });
+          if (img.complete) hide();
         }
       }
 
@@ -1383,8 +1672,15 @@
           }
         }
 
-        if (!suppressSync && !state.followRemote) {
-          sendSyncUpdate({ mediaId: id, timeMs: 0, paused: true, fps: 30, frame: 0 }, false, getControlTargetClientId());
+        if (!suppressSync) {
+          const targetId = getControlTargetClientId();
+          // If Sync is ON and we're connected to a WebUI target, also open the media in that WebUI.
+          if (state.followRemote && state.wsConnected && targetId) {
+            sendSyncUpdate({ mediaId: id, timeMs: 0, paused: true, fps: 30, frame: 0, openInUi: true }, true, targetId);
+          } else if (!state.followRemote) {
+            // Normal desktop-driver behavior: publish selection to the selected target (if any).
+            sendSyncUpdate({ mediaId: id, timeMs: 0, paused: true, fps: 30, frame: 0 }, false, targetId);
+          }
         }
 
         try {
@@ -2564,8 +2860,13 @@
       });
 
       $('btnFollow').addEventListener('click', () => {
+        if (!state.followSource) {
+          // Only togglable when Sync WebUI is not None.
+          updateFollowButtonUi();
+          return;
+        }
         state.followRemote = !state.followRemote;
-        $('btnFollow').textContent = state.followRemote ? 'Follow remote: ON' : 'Follow remote: OFF';
+        updateFollowButtonUi();
         savePrefs();
 
         // If we just became the driver, immediately publish our current state.
@@ -2591,6 +2892,11 @@
       $('followSource').addEventListener('change', () => {
         const val = String($('followSource').value || '');
         state.followSource = val;
+
+        // Requirement: follow can only be enabled when a source is selected.
+        // Default behavior: selecting a source turns follow ON; selecting None forces follow OFF.
+        state.followRemote = Boolean(val);
+        updateFollowButtonUi();
         savePrefs();
 
         // If changed to None, stop following but keep local playback.
@@ -2642,7 +2948,9 @@
       }
 
       $('toggleDrive').textContent = state.drive ? 'Drive: ON' : 'Drive: OFF';
-      $('btnFollow').textContent = state.followRemote ? 'Follow remote: ON' : 'Follow remote: OFF';
+      // Enforce follow/sync invariants on startup.
+      state.followRemote = Boolean(state.followSource);
+      updateFollowButtonUi();
 
       // Auto-home UI initialization
       $('autoHomeEnabled').checked = state.autoHomeEnabled;
@@ -2700,11 +3008,19 @@
       if (v instanceof HTMLVideoElement) {
         const fps = 30;
         const push = (e) => {
+          if (isLocalVideoEventSuppressed()) return;
           // Don't send sync updates if we're currently applying remote state (prevent feedback loop)
           if (state.isApplyingRemoteState) return;
           if (!state.current) return;
           const timeMs = Math.round((v.currentTime || 0) * 1000);
           const frame = currentFrame(v.currentTime || 0, fps);
+
+          // Coordinated seek: if we're the driver and we seek while playing, pause and resync
+          // so both ends buffer the new segment before starting together.
+          if (e && e.type === 'seeked' && !v.paused && !state.followRemote && getControlTargetClientId()) {
+            startSeekSyncAsLeader(v, timeMs).catch(() => {});
+            return;
+          }
           // Auto-home should also respond to manual pauses triggered via native video controls.
           if (v.paused) triggerAutoHome();
           else cancelAutoHome();
@@ -2745,8 +3061,14 @@
 
             const v = $('video');
             if (!(v instanceof HTMLVideoElement)) return;
+            // Don't fight the remote driver.
+            if (state.followRemote) return;
             v.currentTime = seekMs / 1000;
-            // Immediately sync the seek to web UI
+            // If we're currently playing, the seeked event will trigger a coordinated seek-sync
+            // so both ends buffer before resuming. Don't spam sync updates here.
+            if (!v.paused && getControlTargetClientId()) return;
+
+            // If paused, immediately sync the seek.
             const fps = 30;
             const frame = currentFrame(seekMs / 1000, fps);
             sendSyncUpdate({ mediaId: state.current.id, timeMs: seekMs, paused: v.paused, fps, frame }, true, getControlTargetClientId());
