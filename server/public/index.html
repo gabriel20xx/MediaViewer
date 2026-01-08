@@ -2244,17 +2244,38 @@
         }
       });
 
+      function renderBootShell() {
+        const root = document.getElementById('app');
+        if (!root) return;
+        // Minimal initial markup so scan progress can render immediately,
+        // even while the full list is still loading.
+        root.innerHTML = `
+          <header>
+            <h1>MediaViewer</h1>
+            <div class="opStatus" id="opStatus" style="display:none">
+              <progress id="opProgress"></progress>
+              <span class="small" id="opText"></span>
+            </div>
+          </header>
+          <main>
+            <div class="small">Loading…</div>
+          </main>
+        `;
+      }
+
       (async () => {
         ensureClientId();
         loadPrefs();
         connectWs();
 
-        // Render immediately so reloads during scanning never show a blank page.
+        // Render a minimal shell immediately (prevents blank screen and enables scan indicator).
+        renderBootShell();
+
+        // If a scan is in progress, resume the overlay ASAP (do not block list loading).
+        try { window.resumeScanIfNeeded(); } catch {}
+
         await loadList();
         render();
-
-        // If a scan is in progress, resume the overlay in the background.
-        try { window.resumeScanIfNeeded(); } catch {}
       })();
     </script>
   </head>

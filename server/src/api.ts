@@ -302,7 +302,8 @@ export function buildApiRouter(opts: {
     // DeoVR is picky about content types; fall back to explicit mappings.
     const forcedContentType = (() => {
       if (mediaType === 'video') {
-        if (ext === '.mp4' || ext === '.m4v' || ext === '.mov') return 'video/mp4';
+        if (ext === '.mp4' || ext === '.m4v') return 'video/mp4';
+        if (ext === '.mov') return 'video/quicktime';
         if (ext === '.mkv') return 'video/x-matroska';
         if (ext === '.webm') return 'video/webm';
         if (ext === '.avi') return 'video/x-msvideo';

@@ -1741,7 +1741,7 @@
           // Ensure media is loaded.
           if (id && (!state.current || state.current.id !== id)) {
             const it = state.items.find((x) => x.id === id) || { id, filename: id, mediaType: 'video', hasFunscript: false };
-            await openMedia(it.id, { suppressSync: true });
+            await openMedia(it.id, { suppressSync: true, fromRemote: true });
           }
 
           if (!state.noVideo) {
@@ -1781,7 +1781,7 @@
         if (!state.current || state.current.id !== id) {
           // ensure list contains it or fetch minimal info
           const it = state.items.find((x) => x.id === id) || { id, filename: id, mediaType: 'video', hasFunscript: false };
-          await openMedia(it.id, { suppressSync: true });
+          await openMedia(it.id, { suppressSync: true, fromRemote: true });
         }
 
         // Only throttle time updates, not pause state changes
@@ -2108,7 +2108,8 @@
       }
 
       async function openMedia(id, opts = {}) {
-        if (isHereSphereFollowLockActive()) {
+        const allowWhileLocked = Boolean(opts && (opts.allowWhileLocked || opts.fromRemote));
+        if (isHereSphereFollowLockActive() && !allowWhileLocked) {
           logToConsole('warn', 'Blocked local media switch while following HereSphere (Sync ON)');
           return;
         }
