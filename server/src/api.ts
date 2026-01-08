@@ -13,6 +13,40 @@ import { generateThumbnail, CACHE_DIR } from './thumbnails/generator.js';
 // Global scan progress tracker
 let scanProgress = { isScanning: false, scanned: 0, total: 0, message: '' };
 
+// Throttled scan logging (avoid spamming console)
+let lastScanLogAtMs = 0;
+let lastScanLogScanned = 0;
+let lastScanLogMessage = '';
+
+function logScanProgressThrottled(scanned: number, message: string) {
+  try {
+    const now = Date.now();
+    const msg = String(message || '').trim();
+    const sc = Math.max(0, Math.round(Number(scanned) || 0));
+
+    const messageChanged = msg && msg !== lastScanLogMessage;
+    const scannedJump = sc - lastScanLogScanned;
+    const minIntervalMs = 2500;
+    const minScannedDelta = 250;
+
+    const shouldLog =
+      messageChanged ||
+      (scannedJump >= minScannedDelta) ||
+      (now - lastScanLogAtMs >= minIntervalMs && scannedJump >= 50);
+
+    if (!shouldLog) return;
+
+    lastScanLogAtMs = now;
+    lastScanLogScanned = sc;
+    if (msg) lastScanLogMessage = msg;
+
+    // eslint-disable-next-line no-console
+    console.log(`[MediaViewer] Scan: ${msg || 'Scanning...'} (${sc} files)`);
+  } catch {
+    // ignore
+  }
+}
+
 
 
 export function buildApiRouter(opts: {
@@ -58,6 +92,12 @@ export function buildApiRouter(opts: {
     }
     
     scanProgress = { isScanning: true, scanned: 0, total: 0, message: 'Starting scan...' };
+
+    lastScanLogAtMs = 0;
+    lastScanLogScanned = 0;
+    lastScanLogMessage = '';
+    // eslint-disable-next-line no-console
+    console.log('[MediaViewer] Scan started');
     
     // Start scan in background
     upsertMediaFromDisk({ 
@@ -65,15 +105,21 @@ export function buildApiRouter(opts: {
       mediaRoot,
       onProgress: (scanned, message) => {
         scanProgress = { isScanning: true, scanned, total: 0, message };
+        logScanProgressThrottled(scanned, message);
       }
     })
       .then((result) => {
         const removed = typeof (result as any).removed === 'number' ? (result as any).removed : 0;
         const removedMsg = removed > 0 ? `, ${removed} removed` : '';
-        scanProgress = { isScanning: false, scanned: result.scanned, total: result.scanned, message: `Complete: ${result.scanned} files scanned, ${result.upserted} updated${removedMsg}` };
+        const doneMsg = `Complete: ${result.scanned} files scanned, ${result.upserted} updated${removedMsg}`;
+        scanProgress = { isScanning: false, scanned: result.scanned, total: result.scanned, message: doneMsg };
+        // eslint-disable-next-line no-console
+        console.log(`[MediaViewer] Scan complete: ${result.scanned} scanned, ${result.upserted} updated${removedMsg}`);
       })
       .catch((err) => {
         scanProgress = { isScanning: false, scanned: 0, total: 0, message: `Error: ${err.message}` };
+        // eslint-disable-next-line no-console
+        console.warn(`[MediaViewer] Scan error: ${err instanceof Error ? err.message : String(err)}`);
       });
     
     res.json({ ok: true, message: 'Scan started' });

@@ -39,6 +39,7 @@
         items: [],
         isScanRunning: false,
         isRegenThumbsRunning: false,
+        _scanUiText: '',
         funFilter: 'all', // all | with | without
         vrFilter: 'all', // all | vr | nonvr
         gridMin: 180,
@@ -1093,6 +1094,13 @@
         // Apply disabled state after DOM is created.
         updateOperationButtons();
 
+        // If a scan is currently running, render() will have rebuilt the header and
+        // reset the opStatus element to display:none. Re-show it here.
+        if (state.isScanRunning) {
+          const txt = String(state._scanUiText || 'Scanning...').trim() || 'Scanning...';
+          opShow(txt, 'indeterminate');
+        }
+
         el('q').addEventListener('input', (e) => {
           const val = e.target.value;
           window.clearTimeout(window.__qT);
@@ -1342,12 +1350,14 @@
               updateOperationButtons();
               const msg = p.message || 'Scanning...';
               const scanned = typeof p.scanned === 'number' ? p.scanned : 0;
-              opShow(`${msg} (${scanned} files)`, 'indeterminate');
+              state._scanUiText = `${msg} (${scanned} files)`;
+              opShow(state._scanUiText, 'indeterminate');
               await sleep(500);
               continue;
             }
 
             state.isScanRunning = false;
+            state._scanUiText = '';
             updateOperationButtons();
 
             const doneMsg = (p && p.message) ? p.message : 'Scan complete';
@@ -1366,7 +1376,8 @@
               updateOperationButtons();
               const msg = p.message || 'Scanning...';
               const scanned = typeof p.scanned === 'number' ? p.scanned : 0;
-              opShow(`${msg} (${scanned} files)`, 'indeterminate');
+              state._scanUiText = `${msg} (${scanned} files)`;
+              opShow(state._scanUiText, 'indeterminate');
               await waitForScanCompletion();
               if (state.view === 'grid') {
                 await loadList();
@@ -1374,6 +1385,7 @@
               }
             } else {
               state.isScanRunning = false;
+              state._scanUiText = '';
               updateOperationButtons();
             }
           } catch {
@@ -2333,9 +2345,11 @@
             state.isScanRunning = true;
             const msg = p0.message || 'Scanning...';
             const scanned = typeof p0.scanned === 'number' ? p0.scanned : 0;
-            opShow(`${msg} (${scanned} files)`, 'indeterminate');
+            state._scanUiText = `${msg} (${scanned} files)`;
+            opShow(state._scanUiText, 'indeterminate');
           } else {
             state.isScanRunning = false;
+            state._scanUiText = '';
           }
         } catch {
           // ignore
