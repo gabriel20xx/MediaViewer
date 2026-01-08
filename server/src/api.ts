@@ -76,22 +76,28 @@ export function buildApiRouter(opts: {
   // ongoing stream Range requests (heartbeat):
   // - When requests start/resume, mark playing and advance timeMs by wall-clock.
   // - When requests stop for a short period, mark paused.
+  type DeovrPlaybackState = {
+    sessionId: string;
+    fromClientId: string;
+    ipAddress: string;
+    userAgent: string;
+    mediaId: string;
+    startedAtMs: number;
+    lastSeenAtMs: number;
+    lastPublishAtMs: number;
+    lastTimeMs: number;
+    paused: boolean;
+    inFlight: number;
+    pauseTimer: NodeJS.Timeout | null;
+    // For long-lived streams where the request stays open.
+    lastDataAtMs: number;
+    tickTimer: NodeJS.Timeout | null;
+    idleTimer: NodeJS.Timeout | null;
+  };
+
   const deovrPlaybackByKey = new Map<
     string,
-    {
-      sessionId: string;
-      fromClientId: string;
-      ipAddress: string;
-      userAgent: string;
-      mediaId: string;
-      startedAtMs: number;
-      lastSeenAtMs: number;
-      lastPublishAtMs: number;
-      lastTimeMs: number;
-      paused: boolean;
-      inFlight: number;
-      pauseTimer: NodeJS.Timeout | null;
-    }
+    DeovrPlaybackState
   >();
 
   const DEOVR_FPS = 30;
@@ -122,6 +128,8 @@ export function buildApiRouter(opts: {
       if (age > DEOVR_FORGET_MS) {
         try {
           if (st.pauseTimer) clearTimeout(st.pauseTimer);
+          if (st.tickTimer) clearInterval(st.tickTimer);
+          if (st.idleTimer) clearInterval(st.idleTimer);
         } catch {}
         deovrPlaybackByKey.delete(key);
       }
@@ -387,26 +395,7 @@ export function buildApiRouter(opts: {
 
     // If a VR app is actually requesting the media stream, treat that as the authoritative
     // "this is playing" signal (DeoVR may prefetch /deovr/video/:id JSON for many items).
-    let deovrStateKey: string | null = null;
-    let deovrStateRef:
-      | {
-          sessionId: string;
-          fromClientId: string;
-          ipAddress: string;
-          userAgent: string;
-          mediaId: string;
-          startedAtMs: number;
-          lastSeenAtMs: number;
-          lastPublishAtMs: number;
-          lastTimeMs: number;
-          paused: boolean;
-          inFlight: number;
-          pauseTimer: NodeJS.Timeout | null;
-          lastDataAtMs?: number;
-          tickTimer?: NodeJS.Timeout | null;
-          idleTimer?: NodeJS.Timeout | null;
-        }
-      | null = null;
+    let deovrStateRef: DeovrPlaybackState | null = null;
 
     try {
       const ua = String(req.get('user-agent') || '').trim();
@@ -420,14 +409,13 @@ export function buildApiRouter(opts: {
         const ipAddress = getClientIp(req);
         const fromClientId = `vr:deovr:${ipAddress}`;
         const key = `${sessionId}|${fromClientId}`;
-        deovrStateKey = key;
 
         const now = Date.now();
         let st = deovrPlaybackByKey.get(key);
 
         // Start / media switch.
         if (!st || st.mediaId !== id) {
-          st = {
+          const created: DeovrPlaybackState = {
             sessionId,
             fromClientId,
             ipAddress,
@@ -445,25 +433,29 @@ export function buildApiRouter(opts: {
             idleTimer: null,
           };
 
+          deovrPlaybackByKey.set(key, created);
+          st = created;
+
+          const state = created;
+
           // Periodic tick for long-lived streams (publish time while playing).
-          st.tickTimer = setInterval(() => {
+          state.tickTimer = setInterval(() => {
             try {
               if (!opts.onVrStream) return;
-              if (!st) return;
-              if (st.paused) return;
-              if ((st.inFlight || 0) <= 0) return;
+              if (state.paused) return;
+              if ((state.inFlight || 0) <= 0) return;
               const now2 = Date.now();
-              st.lastTimeMs = Math.max(0, now2 - (st.startedAtMs || now2));
-              if (now2 - (st.lastPublishAtMs || 0) < DEOVR_PUBLISH_MIN_MS) return;
-              st.lastPublishAtMs = now2;
-              const tMs = Math.max(0, Math.round(st.lastTimeMs || 0));
+              state.lastTimeMs = Math.max(0, now2 - (state.startedAtMs || now2));
+              if (now2 - (state.lastPublishAtMs || 0) < DEOVR_PUBLISH_MIN_MS) return;
+              state.lastPublishAtMs = now2;
+              const tMs = Math.max(0, Math.round(state.lastTimeMs || 0));
               Promise.resolve(
                 opts.onVrStream({
-                  sessionId: st.sessionId,
-                  mediaId: st.mediaId,
-                  fromClientId: st.fromClientId,
-                  userAgent: st.userAgent || 'Unknown',
-                  ipAddress: st.ipAddress || 'unknown',
+                  sessionId: state.sessionId,
+                  mediaId: state.mediaId,
+                  fromClientId: state.fromClientId,
+                  userAgent: state.userAgent || 'Unknown',
+                  ipAddress: state.ipAddress || 'unknown',
                   timeMs: tMs,
                   paused: false,
                   fps: DEOVR_FPS,
@@ -474,30 +466,29 @@ export function buildApiRouter(opts: {
               // ignore
             }
           }, DEOVR_TICK_MS);
-          st.tickTimer?.unref?.();
+          state.tickTimer?.unref?.();
 
           // Idle-based pause inference for single long-lived streams.
-          st.idleTimer = setInterval(() => {
+          state.idleTimer = setInterval(() => {
             try {
               if (!opts.onVrStream) return;
-              if (!st) return;
-              if (st.paused) return;
-              if ((st.inFlight || 0) <= 0) return;
+              if (state.paused) return;
+              if ((state.inFlight || 0) <= 0) return;
               const now2 = Date.now();
-              const lastData = Number(st.lastDataAtMs) || 0;
+              const lastData = Number(state.lastDataAtMs) || 0;
               if (!lastData) return;
               if (now2 - lastData < DEOVR_IDLE_PAUSE_MS) return;
 
-              st.paused = true;
+              state.paused = true;
               // Freeze time at lastTimeMs (don't advance while paused).
-              const tMs = Math.max(0, Math.round(st.lastTimeMs || 0));
+              const tMs = Math.max(0, Math.round(state.lastTimeMs || 0));
               Promise.resolve(
                 opts.onVrStream({
-                  sessionId: st.sessionId,
-                  mediaId: st.mediaId,
-                  fromClientId: st.fromClientId,
-                  userAgent: st.userAgent || 'Unknown',
-                  ipAddress: st.ipAddress || 'unknown',
+                  sessionId: state.sessionId,
+                  mediaId: state.mediaId,
+                  fromClientId: state.fromClientId,
+                  userAgent: state.userAgent || 'Unknown',
+                  ipAddress: state.ipAddress || 'unknown',
                   timeMs: tMs,
                   paused: true,
                   fps: DEOVR_FPS,
@@ -508,42 +499,42 @@ export function buildApiRouter(opts: {
               // ignore
             }
           }, 200);
-          st.idleTimer?.unref?.();
-
-          deovrPlaybackByKey.set(key, st);
+          state.idleTimer?.unref?.();
         }
 
-        deovrStateRef = st;
+        if (!st) return;
+        const stateAtRequest: DeovrPlaybackState = st;
+        deovrStateRef = stateAtRequest;
 
         // Any new request means we're active; cancel pending pause.
-        if (st.pauseTimer) {
-          try { clearTimeout(st.pauseTimer); } catch {}
-          st.pauseTimer = null;
+        if (stateAtRequest.pauseTimer) {
+          try {
+            clearTimeout(stateAtRequest.pauseTimer);
+          } catch {}
+          stateAtRequest.pauseTimer = null;
         }
 
         // Track in-flight requests to allow near-instant pause when the stream stops.
-        st.inFlight = Math.max(0, (st.inFlight || 0) + 1);
+        stateAtRequest.inFlight = Math.max(0, (stateAtRequest.inFlight || 0) + 1);
         const release = () => {
-          if (!st) return;
-          st.inFlight = Math.max(0, (st.inFlight || 0) - 1);
-          if (st.inFlight !== 0) return;
+          stateAtRequest.inFlight = Math.max(0, (stateAtRequest.inFlight || 0) - 1);
+          if (stateAtRequest.inFlight !== 0) return;
 
           // Debounce slightly so back-to-back range requests don't flap pause/play.
-          st.pauseTimer = setTimeout(() => {
+          stateAtRequest.pauseTimer = setTimeout(() => {
             if (!opts.onVrStream) return;
-            if (!st) return;
-            if ((st.inFlight || 0) !== 0) return;
-            if (st.paused) return;
+            if ((stateAtRequest.inFlight || 0) !== 0) return;
+            if (stateAtRequest.paused) return;
 
-            st.paused = true;
-            const tMs = Math.max(0, Math.round(st.lastTimeMs || 0));
+            stateAtRequest.paused = true;
+            const tMs = Math.max(0, Math.round(stateAtRequest.lastTimeMs || 0));
             try {
                 Promise.resolve(opts.onVrStream({
-                sessionId: st.sessionId,
-                mediaId: st.mediaId,
-                fromClientId: st.fromClientId,
-                userAgent: st.userAgent || 'Unknown',
-                ipAddress: st.ipAddress || 'unknown',
+                sessionId: stateAtRequest.sessionId,
+                mediaId: stateAtRequest.mediaId,
+                fromClientId: stateAtRequest.fromClientId,
+                userAgent: stateAtRequest.userAgent || 'Unknown',
+                ipAddress: stateAtRequest.ipAddress || 'unknown',
                 timeMs: tMs,
                 paused: true,
                 fps: DEOVR_FPS,
@@ -553,23 +544,23 @@ export function buildApiRouter(opts: {
               // ignore
             }
           }, DEOVR_INSTANT_PAUSE_DEBOUNCE_MS);
-          st.pauseTimer?.unref?.();
+          stateAtRequest.pauseTimer?.unref?.();
         };
         res.once('close', release);
         res.once('finish', release);
 
         // Resume from paused: keep time continuity.
-        if (st.paused) {
-          st.paused = false;
-          st.startedAtMs = now - (st.lastTimeMs || 0);
+        if (stateAtRequest.paused) {
+          stateAtRequest.paused = false;
+          stateAtRequest.startedAtMs = now - (stateAtRequest.lastTimeMs || 0);
         }
 
-        st.lastSeenAtMs = now;
-        st.lastTimeMs = Math.max(0, now - (st.startedAtMs || now));
+        stateAtRequest.lastSeenAtMs = now;
+        stateAtRequest.lastTimeMs = Math.max(0, now - (stateAtRequest.startedAtMs || now));
 
-        const shouldPublish = (now - (st.lastPublishAtMs || 0) >= DEOVR_PUBLISH_MIN_MS) || (lastVrStreamMediaByClient.get(key) !== id);
+        const shouldPublish = (now - (stateAtRequest.lastPublishAtMs || 0) >= DEOVR_PUBLISH_MIN_MS) || (lastVrStreamMediaByClient.get(key) !== id);
         if (shouldPublish) {
-          st.lastPublishAtMs = now;
+          stateAtRequest.lastPublishAtMs = now;
           lastVrStreamMediaByClient.set(key, id);
           try {
             Promise.resolve(opts.onVrStream({
@@ -578,10 +569,10 @@ export function buildApiRouter(opts: {
               fromClientId,
               userAgent: ua || 'Unknown',
               ipAddress,
-              timeMs: Math.max(0, Math.round(st.lastTimeMs || 0)),
+              timeMs: Math.max(0, Math.round(stateAtRequest.lastTimeMs || 0)),
               paused: false,
               fps: DEOVR_FPS,
-              frame: Math.max(0, Math.floor(((st.lastTimeMs || 0) / 1000) * DEOVR_FPS)),
+              frame: Math.max(0, Math.floor(((stateAtRequest.lastTimeMs || 0) / 1000) * DEOVR_FPS)),
             })).catch(() => {});
           } catch {
             // ignore
