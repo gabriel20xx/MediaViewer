@@ -1652,24 +1652,34 @@
           const status = img.parentElement?.querySelector('.thumbStatus');
           if (!status) continue;
 
+          const isDeferred = img.hasAttribute('data-src');
+
           // Default: show loading.
           status.textContent = 'Loading…';
           status.classList.remove('hidden');
 
           const onLoad = () => {
+            // For deferred video thumbs, we start with a 1x1 placeholder GIF and later
+            // swap in the real thumbnail. Don't hide "Loading…" on the placeholder load.
+            if (img.hasAttribute('data-src')) return;
             status.classList.add('hidden');
+            try { img.removeEventListener('load', onLoad); } catch {}
+            try { img.removeEventListener('error', onError); } catch {}
           };
           const onError = () => {
+            if (img.hasAttribute('data-src')) return;
             status.textContent = "Thumbnail couldn't load";
             status.classList.remove('hidden');
+            try { img.removeEventListener('load', onLoad); } catch {}
+            try { img.removeEventListener('error', onError); } catch {}
           };
 
-          img.addEventListener('load', onLoad, { once: true });
-          img.addEventListener('error', onError, { once: true });
+          img.addEventListener('load', onLoad, { once: !isDeferred });
+          img.addEventListener('error', onError, { once: !isDeferred });
 
           // If already loaded (from cache), update immediately.
           try {
-            if (img.complete && img.naturalWidth > 0) onLoad();
+            if (!isDeferred && img.complete && img.naturalWidth > 0) onLoad();
           } catch {}
         }
 
