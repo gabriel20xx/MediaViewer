@@ -73,6 +73,10 @@ const sessionPlayAt = new Map<string, string>();
 // Receivers may use this if it is close to their server-derived schedule, to reduce
 // tiny skew from differing clockOffset estimates.
 const sessionPlayAtLocalMs = new Map<string, number>();
+// Optional sender-local epoch time (ms since Unix epoch) when the playback state was captured.
+// Receivers may use this (when it looks plausible) to project timeMs forward by the true
+// end-to-end delay instead of assuming timeMs corresponds to server updatedAt.
+const sessionCapturedAtLocalMs = new Map<string, number>();
 const clientsById = new Map<string, Set<WsClient>>();
 type WsClient = {
   send(data: string): void;
@@ -182,9 +186,13 @@ async function broadcastSyncState(sessionId: string) {
   const baseState = getSyncPlaybackState(sessionId);
   const playAt = sessionPlayAt.get(sessionId);
   const playAtLocalMs = sessionPlayAtLocalMs.get(sessionId);
-  const state = (!baseState.paused && playAt)
-    ? ({ ...baseState, playAt, ...(typeof playAtLocalMs === 'number' && Number.isFinite(playAtLocalMs) ? { playAtLocalMs } : {}) } as any)
-    : baseState;
+  const capturedAtLocalMs = sessionCapturedAtLocalMs.get(sessionId);
+  const state = {
+    ...baseState,
+    ...(!baseState.paused && playAt ? { playAt } : {}),
+    ...(typeof playAtLocalMs === 'number' && Number.isFinite(playAtLocalMs) ? { playAtLocalMs } : {}),
+    ...(typeof capturedAtLocalMs === 'number' && Number.isFinite(capturedAtLocalMs) ? { capturedAtLocalMs } : {}),
+  } as any;
   // Include all client metadata
   const clients = buildClientsList();
   const msg = JSON.stringify({ type: 'sync:state', state, clients });
@@ -201,9 +209,14 @@ function sendSyncStateToClient(sessionId: string, toClientId: string, state: any
   const clients = buildClientsList();
   const playAt = sessionPlayAt.get(sessionId);
   const playAtLocalMs = sessionPlayAtLocalMs.get(sessionId);
-  const stateWithPlayAt = (state && state.paused === false && playAt)
-    ? { sessionId, ...state, playAt, ...(typeof playAtLocalMs === 'number' && Number.isFinite(playAtLocalMs) ? { playAtLocalMs } : {}) }
-    : { sessionId, ...state };
+  const capturedAtLocalMs = sessionCapturedAtLocalMs.get(sessionId);
+  const stateWithPlayAt = {
+    sessionId,
+    ...state,
+    ...(state && state.paused === false && playAt ? { playAt } : {}),
+    ...(typeof playAtLocalMs === 'number' && Number.isFinite(playAtLocalMs) ? { playAtLocalMs } : {}),
+    ...(typeof capturedAtLocalMs === 'number' && Number.isFinite(capturedAtLocalMs) ? { capturedAtLocalMs } : {}),
+  };
   const msg = JSON.stringify({ type: 'sync:state', state: stateWithPlayAt, clients });
   for (const ws of targets) {
     if (ws.readyState === 1) ws.send(msg);
@@ -350,6 +363,12 @@ function registerWsHandlers() {
       const sessionId = String(msg.sessionId ?? ws.__mvSessionId ?? 'default').trim() || 'default';
       const mediaId = msg.mediaId === null ? null : String(msg.mediaId ?? '').trim();
       if (!clientId || mediaId === '') return;
+
+      const capturedRaw = (msg as any).capturedAtLocalMs;
+      const captured = typeof capturedRaw === 'number' ? capturedRaw : (typeof capturedRaw === 'string' ? Number(capturedRaw) : NaN);
+      if (Number.isFinite(captured) && captured > 0) {
+        sessionCapturedAtLocalMs.set(sessionId, Math.round(captured));
+      }
 
       // Optional scheduled play time (ISO). Clients use this to start at the same moment.
       const playAtRaw = (msg as any).playAt;

@@ -1698,6 +1698,7 @@
           sessionId: state.sessionId,
           clientId: state.clientId,
           ...update,
+          capturedAtLocalMs: (update && update.capturedAtLocalMs != null) ? update.capturedAtLocalMs : Date.now(),
         };
         const target = typeof toClientId === 'string' ? toClientId.trim() : '';
         if (target) payload.toClientId = target;
@@ -1872,7 +1873,16 @@
         const clockOffset = typeof state.serverClockOffsetMs === 'number' && Number.isFinite(state.serverClockOffsetMs)
           ? state.serverClockOffsetMs
           : 0;
-        const baselineRemoteNow = updatedAtMs !== null ? updatedAtMs + clockOffset : nowMs;
+        const baselineFromServer = updatedAtMs !== null ? updatedAtMs + clockOffset : nowMs;
+        let baselineRemoteNow = baselineFromServer;
+        const capRaw = remote.capturedAtLocalMs;
+        const cap = typeof capRaw === 'number' ? capRaw : (typeof capRaw === 'string' ? Number(capRaw) : NaN);
+        if (Number.isFinite(cap) && cap > 0 && cap <= nowMs + 50) {
+          const delta = Math.abs(cap - baselineFromServer);
+          if (delta <= 500) {
+            baselineRemoteNow = cap;
+          }
+        }
 
         let playAtLocalMs = null;
         if (!paused && remote.playAt) {
@@ -1952,6 +1962,16 @@
             } else {
               logToConsole('log', 'Playing video (remote)');
                 cancelScheduledPlay();
+              // When resuming, even small network/broadcast delays can leave us slightly behind.
+              // Always jump forward to the projected remote time (within a small threshold)
+              // so we start in sync without waiting for the next periodic update.
+              try {
+                const desired = projectedTimeMs / 1000;
+                const cur = Number.isFinite(v.currentTime) ? v.currentTime : 0;
+                if (Number.isFinite(desired) && Math.abs(cur - desired) > 0.02) {
+                  v.currentTime = desired;
+                }
+              } catch {}
               suppressLocalVideoEventsUntil(Date.now() + 1500);
               try { await v.play(); } catch {}
               cancelAutoHome(); // Cancel auto-home when remotely unpaused

@@ -477,6 +477,7 @@
           sessionId: state.wsSessionId,
           clientId: state.clientId,
           ...update,
+          capturedAtLocalMs: (update && update.capturedAtLocalMs != null) ? update.capturedAtLocalMs : Date.now(),
         };
         const target = typeof toClientId === 'string' ? toClientId.trim() : '';
         if (target) payload.toClientId = target;
@@ -684,7 +685,16 @@
         const clockOffset = typeof state.remoteServerClockOffsetMs === 'number' && Number.isFinite(state.remoteServerClockOffsetMs)
           ? state.remoteServerClockOffsetMs
           : 0;
-        const baselineRemoteNow = updatedAtMs !== null ? updatedAtMs + clockOffset : now;
+        const baselineFromServer = updatedAtMs !== null ? updatedAtMs + clockOffset : now;
+        let baselineRemoteNow = baselineFromServer;
+        const capRaw = remote.capturedAtLocalMs;
+        const cap = typeof capRaw === 'number' ? capRaw : (typeof capRaw === 'string' ? Number(capRaw) : NaN);
+        if (Number.isFinite(cap) && cap > 0 && cap <= now + 50) {
+          const delta = Math.abs(cap - baselineFromServer);
+          if (delta <= 500) {
+            baselineRemoteNow = cap;
+          }
+        }
         const paused = Boolean(remote.paused);
 
         let playAtLocalMs = null;
