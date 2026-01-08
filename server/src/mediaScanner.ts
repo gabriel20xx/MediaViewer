@@ -88,11 +88,12 @@ export async function upsertMediaFromDisk(opts: {
   db: Db;
   mediaRoot: string;
   onProgress?: (scanned: number, message: string) => void;
-}): Promise<{ scanned: number; upserted: number }>
+}): Promise<{ scanned: number; upserted: number; removed: number }>
 {
   const { db, mediaRoot, onProgress } = opts;
   let scanned = 0;
   let upserted = 0;
+  let removed = 0;
 
   for await (const absPath of walk(mediaRoot)) {
     scanned++;
@@ -205,5 +206,75 @@ export async function upsertMediaFromDisk(opts: {
     upserted++;
   }
 
-  return { scanned, upserted };
+  // Remove DB entries that are no longer present on disk.
+  // We check existence directly rather than relying on the scan set, so we don't accidentally
+  // delete entries that were skipped for non-media reasons.
+  try {
+    const existing = await db.pool.query(
+      `SELECT rel_path FROM media_items WHERE rel_path IS NOT NULL AND rel_path <> '' AND media_type IN ('video','image')`
+    );
+
+    const rows = Array.isArray(existing.rows) ? existing.rows : [];
+    const total = rows.length;
+    const missing: string[] = [];
+
+    const existsOnDisk = async (abs: string): Promise<boolean> => {
+      try {
+        await fs.stat(abs);
+        return true;
+      } catch (err: any) {
+        const code = err && typeof err === 'object' ? String(err.code || '') : '';
+        // If we can't access it, don't assume it's missing.
+        if (code === 'EACCES' || code === 'EPERM') return true;
+        return false;
+      }
+    };
+
+    let idx = 0;
+    let checked = 0;
+    const concurrency = 32;
+
+    const worker = async () => {
+      for (;;) {
+        const i = idx++;
+        if (i >= total) return;
+
+        const rel = String(rows[i]?.rel_path || '').trim();
+        if (!rel) {
+          checked++;
+          continue;
+        }
+
+        const abs = path.join(mediaRoot, rel);
+        const ok = await existsOnDisk(abs);
+        if (!ok) missing.push(rel);
+
+        checked++;
+        if (onProgress && checked % 200 === 0) {
+          onProgress(scanned, `Checking for removed files... (${checked}/${total})`);
+        }
+      }
+    };
+
+    await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, total)) }, () => worker()));
+
+    if (missing.length > 0) {
+      if (onProgress) onProgress(scanned, `Removing ${missing.length} missing files from database...`);
+
+      const chunkSize = 200;
+      for (let i = 0; i < missing.length; i += chunkSize) {
+        const chunk = missing.slice(i, i + chunkSize);
+        if (onProgress) onProgress(scanned, `Removing missing files from database... (${Math.min(i + chunk.length, missing.length)}/${missing.length})`);
+        const del = await db.pool.query(
+          `DELETE FROM media_items WHERE rel_path = ANY($1::text[])`,
+          [chunk]
+        );
+        removed += typeof del.rowCount === 'number' ? del.rowCount : 0;
+      }
+    }
+  } catch {
+    // ignore cleanup failures; scan/upsert results are still valid
+  }
+
+  return { scanned, upserted, removed };
 }

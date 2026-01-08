@@ -176,7 +176,15 @@ export function registerVrIntegrations(
   // DeoVR will request /deovr for a “Selection Scene” style listing.
   app.all(['/deovr', '/deovr/'], async (req, res) => {
     const base = baseUrl(req);
-    const vids = await listVrVideos(db, 1000);
+    const qRaw = String((req.query as any)?.q ?? '').trim();
+    const q = qRaw.toLowerCase();
+    const limitParam = Number((req.query as any)?.limit);
+    const limit = Number.isFinite(limitParam) ? Math.max(1, Math.min(5000, Math.round(limitParam))) : 1000;
+
+    const vidsAll = await listVrVideos(db, limit);
+    const vids = q
+      ? vidsAll.filter((v) => String(v.filename || '').toLowerCase().includes(q))
+      : vidsAll;
 
     const sessionId = String((req.query as any)?.sessionId ?? '').trim();
     const sessionQs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';

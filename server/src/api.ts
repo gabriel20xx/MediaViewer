@@ -68,7 +68,9 @@ export function buildApiRouter(opts: {
       }
     })
       .then((result) => {
-        scanProgress = { isScanning: false, scanned: result.scanned, total: result.scanned, message: `Complete: ${result.scanned} files scanned, ${result.upserted} updated` };
+        const removed = typeof (result as any).removed === 'number' ? (result as any).removed : 0;
+        const removedMsg = removed > 0 ? `, ${removed} removed` : '';
+        scanProgress = { isScanning: false, scanned: result.scanned, total: result.scanned, message: `Complete: ${result.scanned} files scanned, ${result.upserted} updated${removedMsg}` };
       })
       .catch((err) => {
         scanProgress = { isScanning: false, scanned: 0, total: 0, message: `Error: ${err.message}` };
@@ -284,15 +286,39 @@ export function buildApiRouter(opts: {
     }
 
     const itemRes = await db.pool.query(
-      `SELECT rel_path FROM media_items WHERE id = $1 LIMIT 1`,
+      `SELECT rel_path, ext, media_type FROM media_items WHERE id = $1 LIMIT 1`,
       [id]
     );
     const item = itemRes.rows[0];
     if (!item) return res.status(404).json({ error: 'Not found' });
 
     const abs = path.join(mediaRoot, item.rel_path);
-    const contentType = mime.lookup(abs) || 'application/octet-stream';
+    const ext = String(item.ext || path.extname(abs) || '').toLowerCase();
+    const mediaType = String(item.media_type || '').toLowerCase();
+
+    // DeoVR is picky about content types; fall back to explicit mappings.
+    const forcedContentType = (() => {
+      if (mediaType === 'video') {
+        if (ext === '.mp4' || ext === '.m4v' || ext === '.mov') return 'video/mp4';
+        if (ext === '.mkv') return 'video/x-matroska';
+        if (ext === '.webm') return 'video/webm';
+        if (ext === '.avi') return 'video/x-msvideo';
+      }
+      if (mediaType === 'image') {
+        if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+        if (ext === '.png') return 'image/png';
+        if (ext === '.gif') return 'image/gif';
+        if (ext === '.webp') return 'image/webp';
+        if (ext === '.bmp') return 'image/bmp';
+      }
+      return null;
+    })();
+
+    const lookedUp = mime.lookup(abs) || null;
+    const contentType = forcedContentType || (typeof lookedUp === 'string' && lookedUp ? lookedUp : 'application/octet-stream');
     res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', 'inline');
+    res.setHeader('Accept-Ranges', 'bytes');
 
     // Use express's built-in static sender by delegating to res.sendFile (supports range).
     return res.sendFile(abs);

@@ -422,7 +422,95 @@
 
         _suppressLocalVideoEventsUntil: 0,
         _pendingSeekSync: null,
+
+        _deoVrHost: null,
+        _deoVrSourceId: null,
+        _deoVrReconnectAt: 0,
+        _deoVrReconnectDelayMs: 1000,
+        _lastDeoVrSyncSentAt: 0,
       };
+
+      function parseDeoVrHostFromSourceId(sourceId) {
+        const id = String(sourceId || '').trim();
+        const prefix = 'vr:deovr:';
+        if (!id.startsWith(prefix)) return null;
+        const host = id.slice(prefix.length).trim();
+        return host ? host : null;
+      }
+
+      function tryParseMediaIdFromDeoVrPath(p) {
+        const raw = String(p || '').trim();
+        if (!raw) return null;
+        try {
+          // Prefer URL parsing (expected when DeoVR plays our HTTP stream URL)
+          const u = new URL(raw);
+          const m = String(u.pathname || '').match(/\/api\/media\/([^/]+)\/stream/i);
+          if (!m) return null;
+          return decodeURIComponent(m[1]);
+        } catch {
+          // Fallback: try simple match on raw string
+          const m = raw.match(/\/api\/media\/([^/]+)\/stream/i);
+          return m ? decodeURIComponent(m[1]) : null;
+        }
+      }
+
+      function sendSyncUpdateAs(clientIdOverride, update, force = false, toClientId = null) {
+        if (!state.wsConnected || !state.ws || state.ws.readyState !== 1) return;
+        const cid = String(clientIdOverride || '').trim();
+        if (!cid) return;
+        const now = Date.now();
+        if (!force && now - (Number(state._lastDeoVrSyncSentAt) || 0) < 200) return;
+        state._lastDeoVrSyncSentAt = now;
+        const payload = {
+          type: 'sync:update',
+          sessionId: state.sessionId,
+          clientId: cid,
+          ...update,
+        };
+        const target = typeof toClientId === 'string' ? toClientId.trim() : '';
+        if (target) payload.toClientId = target;
+        state.ws.send(JSON.stringify(payload));
+      }
+
+      async function updateDeoVrRemoteControlConnection() {
+        const desiredSourceId = String(state.followSource || '').trim();
+        const desiredHost = parseDeoVrHostFromSourceId(desiredSourceId);
+
+        // Connect whenever a DeoVR source is selected.
+        if (!desiredHost) {
+          if (state._deoVrHost && window.mv && typeof window.mv.deoVrDisconnect === 'function') {
+            try { window.mv.deoVrDisconnect(); } catch {}
+          }
+          state._deoVrHost = null;
+          state._deoVrSourceId = null;
+          state._deoVrReconnectAt = 0;
+          state._deoVrReconnectDelayMs = 1000;
+          return;
+        }
+
+        // Already on desired host
+        if (String(state._deoVrHost || '') === desiredHost && String(state._deoVrSourceId || '') === desiredSourceId) return;
+
+        state._deoVrHost = desiredHost;
+        state._deoVrSourceId = desiredSourceId;
+        state._deoVrReconnectAt = 0;
+        state._deoVrReconnectDelayMs = 1000;
+
+        if (!(window.mv && typeof window.mv.deoVrConnect === 'function')) {
+          logToConsole('error', 'DeoVR remote control API not available (preload)');
+          return;
+        }
+
+        logToConsole('log', `DeoVR remote: connecting to ${desiredHost}:23554 ...`);
+        try {
+          const r = await window.mv.deoVrConnect(desiredHost);
+          if (!r || r.ok !== true) {
+            logToConsole('error', `DeoVR remote: connect failed (${(r && r.error) ? r.error : 'unknown error'})`);
+          }
+        } catch (err) {
+          logToConsole('error', `DeoVR remote: connect failed (${String(err && err.message ? err.message : err)})`);
+        }
+      }
 
       function updateFollowButtonUi() {
         const btn = $('btnFollow');
@@ -3226,6 +3314,9 @@
         updateFollowButtonUi();
         savePrefs();
 
+        // Auto-connect DeoVR remote control when its source is selected.
+        updateDeoVrRemoteControlConnection();
+
         // If changed to None, stop following and unload local playback.
         if (!val) {
           unloadCurrentMedia('Sync WebUI set to None - unloading');
@@ -3252,9 +3343,64 @@
         }
       });
 
+      // DeoVR remote control event wiring (status pushes back into shared sync)
+      try {
+        if (window.mv && typeof window.mv.deoVrOnStatus === 'function') {
+          window.mv.deoVrOnStatus((s) => {
+            const sourceId = String(state._deoVrSourceId || '').trim();
+            if (!sourceId) return;
+            const mediaId = tryParseMediaIdFromDeoVrPath(s && s.path);
+            if (!mediaId) return;
+            const currentTime = typeof s.currentTime === 'number' && Number.isFinite(s.currentTime) ? s.currentTime : 0;
+            const paused = Number(s.playerState) === 1;
+            const fps = 30;
+            const timeMs = Math.max(0, Math.round(currentTime * 1000));
+            const frame = currentFrame(currentTime, fps);
+            // Force so DeoVR remains authoritative even while desktop is applying remote.
+            sendSyncUpdateAs(sourceId, { mediaId, timeMs, paused, fps, frame }, true);
+          });
+        }
+
+        if (window.mv && typeof window.mv.deoVrOnConnection === 'function') {
+          window.mv.deoVrOnConnection((e) => {
+            const type = e && e.type ? String(e.type) : '';
+            if (type === 'connected') {
+              logToConsole('log', `DeoVR remote: connected (${e.host || ''})`);
+              state._deoVrReconnectAt = 0;
+              state._deoVrReconnectDelayMs = 1000;
+              return;
+            }
+
+            if (type === 'error') {
+              logToConsole('error', `DeoVR remote: error (${e.error || 'unknown'})`);
+            }
+
+            if (type === 'disconnected' || type === 'error') {
+              // Auto-reconnect while a DeoVR source is still selected.
+              const desiredSourceId = String(state.followSource || '').trim();
+              const desiredHost = parseDeoVrHostFromSourceId(desiredSourceId);
+              if (!desiredHost) return;
+              const now = Date.now();
+              if (now < (Number(state._deoVrReconnectAt) || 0)) return;
+              const delay = Math.min(15_000, Math.max(1000, Number(state._deoVrReconnectDelayMs) || 1000));
+              state._deoVrReconnectAt = now + delay;
+              state._deoVrReconnectDelayMs = Math.min(15_000, delay * 1.5);
+              window.setTimeout(() => {
+                // If selection changed meanwhile, do nothing.
+                if (String(state.followSource || '').trim() !== desiredSourceId) return;
+                updateDeoVrRemoteControlConnection();
+              }, delay);
+            }
+          });
+        }
+      } catch {}
+
       loadPrefs();
       $('serverUrl').value = state.serverUrl;
       await allowSelfSignedForServer(state.serverUrl);
+
+      // If prefs already selected DeoVR as sync source, connect now.
+      updateDeoVrRemoteControlConnection();
 
       try {
         if (window.mv && typeof window.mv.setKeepAwake === 'function') {

@@ -549,7 +549,8 @@
 
         // If the origin client isn't currently connected, treat the message as stale.
         // This prevents old session state from overriding a local click-to-open.
-        if (remote.fromClientId && !isClientIdConnected(remote.fromClientId)) return;
+        // NOTE: VR integrations (HereSphere/DeoVR) are not WS clients, so allow `vr:*` sources.
+        if (remote.fromClientId && !String(remote.fromClientId).startsWith('vr:') && !isClientIdConnected(remote.fromClientId)) return;
 
         // Seek-sync: leader receives peer ready ACKs.
         if (remote.seekToken && String(remote.seekPhase) === 'ready') {
@@ -1274,7 +1275,17 @@
         async function waitForScanCompletion() {
           // Poll server progress until scan completes.
           for (;;) {
-            const p = await apiJson('/api/scan/progress');
+            let p = null;
+            try {
+              p = await apiJson('/api/scan/progress');
+            } catch (e) {
+              const msg = (e && e.message) ? e.message : String(e);
+              opShow(`Scan status unavailable: ${msg}`, { value: 1, max: 1 });
+              await sleep(1200);
+              opHide();
+              return;
+            }
+
             if (p && p.isScanning) {
               const msg = p.message || 'Scanning...';
               const scanned = typeof p.scanned === 'number' ? p.scanned : 0;
@@ -1288,6 +1299,24 @@
             await sleep(800);
             opHide();
             return;
+          }
+        }
+
+        async function resumeScanIfNeeded() {
+          try {
+            const p = await apiJson('/api/scan/progress');
+            if (p && p.isScanning) {
+              const msg = p.message || 'Scanning...';
+              const scanned = typeof p.scanned === 'number' ? p.scanned : 0;
+              opShow(`${msg} (${scanned} files)`, 'indeterminate');
+              await waitForScanCompletion();
+              if (state.view === 'grid') {
+                await loadList();
+                render();
+              }
+            }
+          } catch {
+            // ignore
           }
         }
 
@@ -2147,6 +2176,7 @@
         ensureClientId();
         loadPrefs();
         connectWs();
+        await resumeScanIfNeeded();
         await loadList();
         render();
       })();
