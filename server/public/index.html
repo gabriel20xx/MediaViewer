@@ -6,6 +6,31 @@
     <title>MediaViewer</title>
     <link rel="stylesheet" href="/styles.css" />
     <script>
+      // Minimal global error logging so a runtime exception doesn't silently become a blank page.
+      // Console-only (no UI changes).
+      (() => {
+        try {
+          if (window.__mvGlobalErrorLoggingInstalled) return;
+          window.__mvGlobalErrorLoggingInstalled = true;
+
+          window.addEventListener('error', (ev) => {
+            try {
+              const msg = ev && ev.message ? ev.message : String(ev);
+              const file = ev && ev.filename ? ev.filename : '';
+              const line = ev && typeof ev.lineno === 'number' ? ev.lineno : '';
+              const col = ev && typeof ev.colno === 'number' ? ev.colno : '';
+              console.error('[mv webui] window error:', msg, file, line, col, ev && ev.error ? ev.error : '');
+            } catch {}
+          });
+
+          window.addEventListener('unhandledrejection', (ev) => {
+            try {
+              console.error('[mv webui] unhandled rejection:', ev && ev.reason ? ev.reason : ev);
+            } catch {}
+          });
+        } catch {}
+      })();
+
       const state = {
         q: '',
         page: 1,
@@ -1252,9 +1277,11 @@
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
         function opShow(text, mode) {
-          const wrap = el('opStatus');
-          const prog = el('opProgress');
-          const t = el('opText');
+          const wrap = document.getElementById('opStatus');
+          const prog = document.getElementById('opProgress');
+          const t = document.getElementById('opText');
+          if (!wrap || !prog || !t) return;
+
           wrap.style.display = 'flex';
           t.textContent = text || '';
 
@@ -1268,7 +1295,8 @@
         }
 
         function opHide() {
-          const wrap = el('opStatus');
+          const wrap = document.getElementById('opStatus');
+          if (!wrap) return;
           wrap.style.display = 'none';
         }
 
@@ -2220,9 +2248,13 @@
         ensureClientId();
         loadPrefs();
         connectWs();
-        await window.resumeScanIfNeeded();
+
+        // Render immediately so reloads during scanning never show a blank page.
         await loadList();
         render();
+
+        // If a scan is in progress, resume the overlay in the background.
+        try { window.resumeScanIfNeeded(); } catch {}
       })();
     </script>
   </head>
