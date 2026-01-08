@@ -1552,6 +1552,16 @@
         }
       }
 
+      function applyDefaultMuteForSync() {
+        // When Sync is ON (following a WebUI source), mute local audio by default
+        // to avoid duplicate audio on the same machine.
+        const v = $('video');
+        if (!(v instanceof HTMLVideoElement)) return;
+        if (state.followRemote && !state.noVideo) {
+          if (!v.muted) v.muted = true;
+        }
+      }
+
       function wsUrlFromHttp(httpUrl) {
         const u = new URL(httpUrl);
         u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -2234,6 +2244,7 @@
             ensureDurationMs(id);
           } else {
             v.src = new URL(`/api/media/${id}/stream`, state.serverUrl).toString();
+            applyDefaultMuteForSync();
           }
         }
 
@@ -3436,6 +3447,7 @@
         state.audioOnly = nextMode === 'audio';
         savePrefs();
         setVideoModeUi();
+        applyDefaultMuteForSync();
 
         // Preserve playback state as much as possible when enabling/disabling the stream.
         const v = $('video');
@@ -3450,6 +3462,7 @@
               : (Number(getLocalNoVideoTimeMsAndPaused().timeMs) || 0);
 
             v.src = new URL(`/api/media/${state.current.id}/stream`, state.serverUrl).toString();
+            applyDefaultMuteForSync();
             try { v.currentTime = seekToMs > 0 ? (seekToMs / 1000) : 0; } catch {}
             if (!wasPaused) {
               v.play().catch(() => {});
@@ -3492,6 +3505,10 @@
         updateFollowButtonUi();
         savePrefs();
 
+        if (state.followRemote) {
+          applyDefaultMuteForSync();
+        }
+
         updateHereSphereFollowLockUi();
 
         // If we just became the driver, immediately publish our current state.
@@ -3523,6 +3540,10 @@
         state.followRemote = Boolean(val);
         updateFollowButtonUi();
         savePrefs();
+
+        if (state.followRemote) {
+          applyDefaultMuteForSync();
+        }
 
         updateHereSphereFollowLockUi();
 
@@ -3658,6 +3679,7 @@
       if (state.lastSerialBaud) $('baud').value = state.lastSerialBaud;
 
       setVideoModeUi();
+      applyDefaultMuteForSync();
       updateFollowSourceOptions();
 
       setWsPill(false);
