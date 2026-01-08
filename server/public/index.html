@@ -92,6 +92,9 @@
           const saved = window.localStorage.getItem('mvPrefs');
           if (saved) {
             const prefs = JSON.parse(saved);
+            if (typeof prefs.pageSize === 'number' && Number.isFinite(prefs.pageSize) && prefs.pageSize > 0) {
+              state.pageSize = Math.max(1, Math.round(prefs.pageSize));
+            }
             if (typeof prefs.gridMin === 'number' && prefs.gridMin >= 120 && prefs.gridMin <= 360) {
               state.gridMin = prefs.gridMin;
             }
@@ -111,6 +114,7 @@
       function savePrefs() {
         try {
           window.localStorage.setItem('mvPrefs', JSON.stringify({
+            pageSize: state.pageSize,
             gridMin: state.gridMin,
             sort: state.sort,
             lenMinSec: state.lenMinSec,
@@ -166,7 +170,7 @@
 
       function sendSyncUpdate(update, force) {
         if (!state.wsConnected || !state.ws || state.ws.readyState !== 1) return;
-        if (Date.now() < state._applyingRemoteUntil) return;
+        if (!force && Date.now() < state._applyingRemoteUntil) return;
         const now = Date.now();
         if (!force && now - state._lastSentAt < 200) return;
         state._lastSentAt = now;
@@ -295,6 +299,9 @@
 
         const v = document.getElementById('v') || document.getElementById('vvr');
         if (!(v instanceof HTMLVideoElement)) return;
+
+        // If the user is actively scrubbing/seeking locally, don't fight their interaction.
+        if (v.seeking) return;
 
         const now = Date.now();
         state._applyingRemoteUntil = now + 800;
@@ -733,6 +740,7 @@
         el('pageSize').addEventListener('change', async (e) => {
           state.pageSize = Number(e.target.value) || 48;
           state.page = 1;
+          savePrefs();
           await loadList();
           render();
         });
@@ -803,17 +811,63 @@
           render();
         });
 
-        el('gridDec').addEventListener('click', () => {
-          state.gridMin = Math.max(120, state.gridMin - 20);
-          el('grid').style.setProperty('--card-min', `${state.gridMin}px`);
-          savePrefs();
-        });
+        function isAllowedGridColumnCount(n) {
+          if (!Number.isFinite(n)) return false;
+          const k = Math.max(1, Math.round(n));
+          if (k === 1 || k === 2 || k === 3) return true;
+          return (k % 4 === 0) || (k % 6 === 0);
+        }
 
-        el('gridInc').addEventListener('click', () => {
-          state.gridMin = Math.min(360, state.gridMin + 20);
+        function getGridColumnCount() {
+          const grid = el('grid');
+          if (!grid) return 1;
+          const cols = getComputedStyle(grid).gridTemplateColumns || '';
+          const parts = cols.split(' ').filter(Boolean);
+          return Math.max(1, parts.length || 1);
+        }
+
+        function setGridMinPx(px) {
+          state.gridMin = Math.max(120, Math.min(360, Math.round(px)));
           el('grid').style.setProperty('--card-min', `${state.gridMin}px`);
           savePrefs();
-        });
+        }
+
+        function stepGridToAllowed(direction) {
+          // direction: -1 => smaller cards (more columns), +1 => larger cards (fewer columns)
+          const grid = el('grid');
+          if (!grid) return;
+          const w = grid.getBoundingClientRect().width;
+          const gap = 12;
+          const currentCols = getGridColumnCount();
+
+          let targetCols = currentCols;
+          for (let i = 0; i < 50; i++) {
+            targetCols = direction < 0 ? (targetCols + 1) : (targetCols - 1);
+            if (targetCols < 1) { targetCols = 1; break; }
+            if (isAllowedGridColumnCount(targetCols)) break;
+          }
+
+          // Compute a card-min that likely yields targetCols.
+          // For CSS grid: cols * cardMin + (cols-1)*gap <= w
+          const raw = Math.floor((w - gap * (targetCols - 1)) / targetCols);
+          let nextMin = Math.max(120, Math.min(360, raw));
+
+          // Nudge to hit an allowed column count exactly.
+          for (let nudge = 0; nudge < 40; nudge++) {
+            setGridMinPx(nextMin);
+            const cols = getGridColumnCount();
+            if (isAllowedGridColumnCount(cols)) return;
+            // If we got too many columns, increase min; else decrease min.
+            nextMin += (cols > targetCols) ? 2 : -2;
+            if (nextMin <= 120 || nextMin >= 360) {
+              setGridMinPx(nextMin);
+              return;
+            }
+          }
+        }
+
+        el('gridDec').addEventListener('click', () => stepGridToAllowed(-1));
+        el('gridInc').addEventListener('click', () => stepGridToAllowed(+1));
 
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

@@ -355,6 +355,10 @@
         lastPlaybackPutAt: 0,
         followRemote: true,
         noVideo: false,
+        noVideoBaseTimeMs: 0,
+        noVideoAnchorAtMs: 0,
+        noVideoPaused: true,
+        noVideoScheduledPlayAtLocalMs: 0,
         remoteTimeMs: 0,
         remotePaused: true,
         remoteFps: 30,
@@ -681,6 +685,28 @@
         return { timeMs: base + Math.max(0, Date.now() - anchor), paused: false };
       }
 
+      function getLocalNoVideoTimeMsAndPaused() {
+        const now = Date.now();
+
+        const schedAt = Number(state.noVideoScheduledPlayAtLocalMs) || 0;
+        if (Number.isFinite(schedAt) && schedAt > now + 10) {
+          return { timeMs: Math.max(0, Math.round(Number(state.noVideoBaseTimeMs) || 0)), paused: true };
+        }
+
+        // If a scheduled start has passed, transition into playing.
+        if (Number.isFinite(schedAt) && schedAt > 0 && schedAt <= now + 10) {
+          state.noVideoScheduledPlayAtLocalMs = 0;
+          state.noVideoPaused = false;
+          state.noVideoAnchorAtMs = now;
+        }
+
+        const base = Math.max(0, Math.round(Number(state.noVideoBaseTimeMs) || 0));
+        if (state.noVideoPaused) return { timeMs: base, paused: true };
+
+        const anchor = Number(state.noVideoAnchorAtMs) || now;
+        return { timeMs: base + Math.max(0, now - anchor), paused: false };
+      }
+
       async function serialDriveTick() {
         if (!state.drive) return;
         if (!state.serialConnected) return;
@@ -693,8 +719,8 @@
         if (!state.noVideo && v instanceof HTMLVideoElement) {
           timeMs = Math.round((v.currentTime || 0) * 1000);
           paused = Boolean(v.paused);
-        } else if (state.noVideo && state.followRemote) {
-          const r = getNoVideoTimeMsAndPaused();
+        } else if (state.noVideo) {
+          const r = state.followRemote ? getNoVideoTimeMsAndPaused() : getLocalNoVideoTimeMsAndPaused();
           timeMs = r.timeMs;
           paused = r.paused;
         }
@@ -909,7 +935,8 @@
 
       function setVideoModeUi() {
         $('btnVideo').textContent = state.noVideo ? 'Video: OFF' : 'Video: ON';
-        $('btnPlayPause').disabled = state.noVideo;
+        // Even in no-video mode, keep controls enabled so we can drive remote clients.
+        $('btnPlayPause').disabled = false;
 
         const v = $('video');
         if (v instanceof HTMLVideoElement) {
@@ -1257,7 +1284,7 @@
           return `<div class='item ${active}' data-id='${it.id}'>
             <div style="font-weight:500; margin-bottom:4px; word-break:break-all;">${esc(it.filename)}</div>
             <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
-              <span style="opacity:0.7; font-size:0.85em;">${esc(it.mediaType)}</span>
+              <span class='pill tag-muted'>${esc(it.mediaType)}</span>
               ${durTag} ${vr} ${fs} ${fsStats}
             </div>
           </div>`;
@@ -1324,6 +1351,10 @@
         state.funscriptPointer = -1;
         state.lastFunscriptValue = 0;
         state.durationMs = null;
+        state.noVideoBaseTimeMs = 0;
+        state.noVideoAnchorAtMs = Date.now();
+        state.noVideoPaused = true;
+        state.noVideoScheduledPlayAtLocalMs = 0;
         // Reset pause tracking so the new video's pause state is applied
         state.lastAppliedRemotePaused = null;
         $('now').textContent = it ? `Now: ${it.filename}` : `Now: ${id}`;
@@ -1873,14 +1904,10 @@
         if (!state.noVideo && v instanceof HTMLVideoElement) {
           timeMs = Math.round((v.currentTime || 0) * 1000);
           paused = Boolean(v.paused);
-        } else if (state.noVideo && state.followRemote) {
-          const base = state.remoteProjectedTimeMs || state.remoteTimeMs || 0;
-          paused = Boolean(state.remotePaused);
-          if (paused) timeMs = base;
-          else {
-            const anchor = state.remoteProjectedAtMs || state.remoteLastUpdateAt || Date.now();
-            timeMs = base + Math.max(0, Date.now() - anchor);
-          }
+        } else if (state.noVideo) {
+          const r = state.followRemote ? getNoVideoTimeMsAndPaused() : getLocalNoVideoTimeMsAndPaused();
+          timeMs = r.timeMs;
+          paused = r.paused;
         }
 
         const frame = currentFrame(timeMs / 1000, fps);
@@ -1912,7 +1939,7 @@
 
         updateFunscriptUi(timeMs);
 
-        const canReport = Boolean(state.current) && (!state.noVideo ? (v instanceof HTMLVideoElement && Number.isFinite(v.currentTime)) : state.followRemote);
+        const canReport = Boolean(state.current) && (!state.noVideo ? (v instanceof HTMLVideoElement && Number.isFinite(v.currentTime)) : true);
 
         if (canReport) {
           $('playback').textContent = `t=${timeMs}ms frame=${frame} fps=${fps}`;
@@ -1939,8 +1966,7 @@
           // Publish sync state only when we're the "driver".
           // If followRemote is ON, we shouldn't send updates.
           // Throttle automatic updates to prevent feedback loops.
-          if (!state.followRemote && !state.noVideo) {
-            // Don't send automatic updates if we're still applying remote state
+          if (!state.followRemote) {
             if (Date.now() >= state.applyingRemoteUntil) {
               sendSyncUpdate({ mediaId: state.current.id, timeMs, paused, fps, frame }, false, getControlTargetClientId());
             }
@@ -2226,7 +2252,50 @@
       $('btnPlayPause').addEventListener('click', async () => {
         const v = $('video');
         if (!(v instanceof HTMLVideoElement)) return;
-        if (state.noVideo) return;
+
+        if (state.noVideo) {
+          if (!state.current) return;
+
+          const now = Date.now();
+          const r = getLocalNoVideoTimeMsAndPaused();
+          const timeMs = Math.max(0, Math.round(r.timeMs || 0));
+          const fps = 30;
+          const frame = currentFrame(timeMs / 1000, fps);
+
+          if (state.noVideoPaused) {
+            const clockOffset = typeof state.serverClockOffsetMs === 'number' && Number.isFinite(state.serverClockOffsetMs)
+              ? state.serverClockOffsetMs
+              : 0;
+            const sched = parseScheduledPlaySpec(state.scheduledPlaySpec, clockOffset);
+
+            if (sched) {
+              sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame, playAt: sched.playAt }, true, getControlTargetClientId());
+              state.noVideoBaseTimeMs = timeMs;
+              state.noVideoPaused = true;
+              state.noVideoAnchorAtMs = now;
+              state.noVideoScheduledPlayAtLocalMs = sched.playAtLocalMs;
+              cancelAutoHome();
+              return;
+            }
+
+            sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: false, fps, frame }, true, getControlTargetClientId());
+            state.noVideoBaseTimeMs = timeMs;
+            state.noVideoAnchorAtMs = now;
+            state.noVideoPaused = false;
+            state.noVideoScheduledPlayAtLocalMs = 0;
+            cancelAutoHome();
+            return;
+          }
+
+          // Pausing
+          state.noVideoBaseTimeMs = timeMs;
+          state.noVideoPaused = true;
+          state.noVideoScheduledPlayAtLocalMs = 0;
+          triggerAutoHome();
+          sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: true, fps, frame, playAt: null }, true, getControlTargetClientId());
+          return;
+        }
+
         if (v.paused) {
           const clockOffset = typeof state.serverClockOffsetMs === 'number' && Number.isFinite(state.serverClockOffsetMs)
             ? state.serverClockOffsetMs
@@ -2276,13 +2345,15 @@
         if (!state.noVideo) {
           // Turning Video ON
           if (state.current?.id && v instanceof HTMLVideoElement) {
-             const wasPaused = state.remotePaused ?? true; // fallback to paused
-             const currentTime = state.durationMs ? (state.lastFunscriptValue / 100 * state.durationMs / 1000) : 0; // rough guess if we were in no-video mode, actually better to use last known time
+             const wasPaused = state.followRemote ? (state.remotePaused ?? true) : Boolean(state.noVideoPaused);
+             const seekToMs = state.followRemote
+               ? (Number(state.remoteTimeMs) || 0)
+               : (Number(getLocalNoVideoTimeMsAndPaused().timeMs) || 0);
              
              // Reload stream but try to seek to where we were
              // openMedia is too destructive (resets funscript state), so we manually set src
              v.src = new URL(`/api/media/${state.current.id}/stream`, state.serverUrl).toString();
-             v.currentTime = state.remoteTimeMs ? state.remoteTimeMs / 1000 : 0;
+             v.currentTime = seekToMs > 0 ? (seekToMs / 1000) : 0;
              if (!wasPaused) {
                  v.play().catch(()=>{});
              }
@@ -2290,9 +2361,20 @@
         } else {
            // Turning Video OFF
            if (v instanceof HTMLVideoElement) {
+             const timeMs = Math.round((v.currentTime || 0) * 1000);
+             const d = Number(v.duration);
+             if (Number.isFinite(d) && d > 0) {
+               state.durationMs = Math.round(d * 1000);
+             }
              v.pause();
              v.removeAttribute('src');
              v.load();
+
+             // Seed local no-video clock from the last known playback position.
+             state.noVideoBaseTimeMs = Math.max(0, timeMs);
+             state.noVideoAnchorAtMs = Date.now();
+             state.noVideoPaused = true;
+             state.noVideoScheduledPlayAtLocalMs = 0;
            }
         }
       });
@@ -2305,8 +2387,16 @@
         // If we just became the driver, immediately publish our current state.
         if (!state.followRemote) {
           const v = $('video');
-          if (state.current && v instanceof HTMLVideoElement) {
-            const fps = 30;
+          if (!state.current) return;
+          const fps = 30;
+          if (state.noVideo) {
+            const r = getLocalNoVideoTimeMsAndPaused();
+            const timeMs = Math.max(0, Math.round(r.timeMs || 0));
+            const frame = currentFrame(timeMs / 1000, fps);
+            sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: Boolean(r.paused), fps, frame }, false, getControlTargetClientId());
+            return;
+          }
+          if (v instanceof HTMLVideoElement) {
             const timeMs = Math.round((v.currentTime || 0) * 1000);
             const frame = currentFrame(v.currentTime || 0, fps);
             sendSyncUpdate({ mediaId: state.current.id, timeMs, paused: v.paused, fps, frame }, false, getControlTargetClientId());
@@ -2473,16 +2563,13 @@
               // Don't fight the remote driver.
               if (state.followRemote) return;
 
-              state.remoteTimeMs = Math.max(0, Math.round(seekMs));
-              const nowSeek = Date.now();
-              state.remoteProjectedTimeMs = state.remoteTimeMs;
-              state.remoteProjectedAtMs = nowSeek;
-              state.remoteLastUpdateAt = nowSeek;
-              state.remotePaused = true;
+              state.noVideoBaseTimeMs = Math.max(0, Math.round(seekMs));
+              state.noVideoAnchorAtMs = Date.now();
+              state.noVideoScheduledPlayAtLocalMs = 0;
 
               const fps = 30;
               const frame = currentFrame(seekMs / 1000, fps);
-              sendSyncUpdate({ mediaId: state.current.id, timeMs: seekMs, paused: true, fps, frame }, true, getControlTargetClientId());
+              sendSyncUpdate({ mediaId: state.current.id, timeMs: seekMs, paused: Boolean(state.noVideoPaused), fps, frame }, true, getControlTargetClientId());
               return;
             }
 
