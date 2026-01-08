@@ -435,7 +435,7 @@ export function buildApiRouter(opts: {
   router.get('/media/:id/thumb', async (req, res) => {
     const id = req.params.id;
     const itemRes = await db.pool.query(
-      `SELECT rel_path, media_type FROM media_items WHERE id = $1 LIMIT 1`,
+      `SELECT rel_path, media_type, filename FROM media_items WHERE id = $1 LIMIT 1`,
       [id]
     );
     const item = itemRes.rows[0];
@@ -474,13 +474,14 @@ export function buildApiRouter(opts: {
       // Fallback to a lightweight placeholder instead of failing the UI.
       // (Also avoids repeated expensive retries; generator caches failures briefly.)
       const msg = e instanceof Error ? e.message : String(e);
+      const mediaLabel = (typeof item.filename === 'string' && item.filename.trim()) ? String(item.filename).trim() : id;
 
       // Avoid log spam when we already have a recent failure marker.
       if (!msg.includes('thumbnail previously failed recently')) {
         if (msg.includes('moov atom not found') || msg.includes('Invalid data found when processing input')) {
-          console.warn(`Thumb gen failed for ${id}: Not able to load preview (invalid/corrupt media)`);
+          console.warn(`Thumb gen failed for ${mediaLabel}: Not able to load preview (invalid/corrupt media)`);
         } else {
-          console.warn(`Thumb gen failed for ${id}: ${String(msg).split('\n')[0]}`);
+          console.warn(`Thumb gen failed for ${mediaLabel}: ${String(msg).split('\n')[0]}`);
         }
       }
 
