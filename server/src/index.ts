@@ -333,6 +333,17 @@ function registerWsHandlers() {
       const fps = typeof msg.fps === 'number' && Number.isFinite(msg.fps) ? msg.fps : 30;
       const frame = typeof msg.frame === 'number' && Number.isFinite(msg.frame) ? msg.frame : 0;
 
+      // Preserve optional, non-persisted fields for targeted routing.
+      // (These are used for UI navigation and seek-sync handshake.)
+      const passthrough: Record<string, any> = {};
+      if ((msg as any).openInUi === true) passthrough.openInUi = true;
+      if (typeof (msg as any).seekToken === 'string' && String((msg as any).seekToken).trim()) passthrough.seekToken = String((msg as any).seekToken).trim();
+      if (typeof (msg as any).seekPhase === 'string' && String((msg as any).seekPhase).trim()) passthrough.seekPhase = String((msg as any).seekPhase).trim();
+      if ((msg as any).seekWantPlay !== undefined) passthrough.seekWantPlay = Boolean((msg as any).seekWantPlay);
+      if (typeof (msg as any).seekTargetClientId === 'string' && String((msg as any).seekTargetClientId).trim()) {
+        passthrough.seekTargetClientId = String((msg as any).seekTargetClientId).trim();
+      }
+
       // Targeted control: route directly to a single client without updating global session state.
       if (toClientId) {
         if (paused) sessionPlayAt.delete(sessionId);
@@ -346,6 +357,7 @@ function registerWsHandlers() {
           frame,
           fromClientId: clientId,
           ...(scheduled ? { playAt: scheduled } : {}),
+          ...passthrough,
           updatedAt: new Date().toISOString(),
         });
         return;
