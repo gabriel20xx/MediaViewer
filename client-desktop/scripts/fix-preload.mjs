@@ -3,7 +3,18 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const preloadPath = path.resolve(__dirname, '../dist/preload.js');
+
+const candidates = [
+	path.resolve(__dirname, '../dist/preload.js'),
+	path.resolve(__dirname, '../dist/preload.cjs'),
+];
+
+const preloadPath = candidates.find((p) => fs.existsSync(p));
+
+if (!preloadPath) {
+	console.log('No preload file found to clean');
+	process.exit(0);
+}
 
 // Read the compiled preload.js
 let content = fs.readFileSync(preloadPath, 'utf-8');

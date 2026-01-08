@@ -1,7 +1,5 @@
-// @ts-ignore: Using require in a module context for Electron preload
-const { contextBridge, ipcRenderer } = require('electron');
-// @ts-ignore: Node is available in preload
-const net = require('net');
+import { contextBridge, ipcRenderer } from 'electron';
+import * as net from 'node:net';
 
 console.log('[Preload] Preload script starting...');
 

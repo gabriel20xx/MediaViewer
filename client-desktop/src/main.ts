@@ -1,9 +1,10 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
 import type { BrowserWindow as BrowserWindowType } from 'electron';
 import * as electron from 'electron';
 import { SerialPort } from 'serialport';
-import { isIP } from 'node:net';
+import { isIP, createConnection, type Socket } from 'node:net';
 import { SerialTCodeDriver } from './serialDriver.js';
 
 const { app, BrowserWindow, ipcMain, powerSaveBlocker, session } = electron;
@@ -173,13 +174,101 @@ try {
 let mainWindow: BrowserWindowType | null = null;
 const driver = new SerialTCodeDriver();
 
+type DeoVrConnEvent = { type: 'connected' | 'disconnected' | 'error'; host?: string; error?: string };
+
+let deoVrSocket: Socket | null = null;
+let deoVrHost: string | null = null;
+let deoVrBuffer: Buffer = Buffer.alloc(0);
+let deoVrPingTimer: NodeJS.Timeout | null = null;
+
+function deoVrEmitConnection(evt: DeoVrConnEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    try {
+      win.webContents.send('deovr:connection', evt);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function deoVrEmitStatus(status: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    try {
+      win.webContents.send('deovr:status', status);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function deoVrCleanup(): void {
+  try {
+    if (deoVrPingTimer) clearInterval(deoVrPingTimer);
+  } catch {
+    // ignore
+  }
+  deoVrPingTimer = null;
+
+  try {
+    if (deoVrSocket) deoVrSocket.removeAllListeners();
+  } catch {
+    // ignore
+  }
+  try {
+    if (deoVrSocket) deoVrSocket.destroy();
+  } catch {
+    // ignore
+  }
+  deoVrSocket = null;
+  deoVrBuffer = Buffer.alloc(0);
+}
+
+function deoVrWritePacket(json: any | null): void {
+  if (!deoVrSocket) return;
+  const payload = json ? Buffer.from(JSON.stringify(json), 'utf8') : Buffer.alloc(0);
+  const header = Buffer.alloc(4);
+  header.writeInt32LE(payload.length, 0);
+  try {
+    deoVrSocket.write(Buffer.concat([header, payload]));
+  } catch {
+    // ignore
+  }
+}
+
+function deoVrOnData(chunk: Buffer): void {
+  deoVrBuffer = Buffer.concat([deoVrBuffer, chunk]);
+  while (deoVrBuffer.length >= 4) {
+    const len = deoVrBuffer.readInt32LE(0);
+    if (len < 0 || len > 10_000_000) {
+      deoVrEmitConnection({ type: 'error', host: deoVrHost || undefined, error: 'Invalid packet length' });
+      deoVrCleanup();
+      return;
+    }
+    if (deoVrBuffer.length < 4 + len) return;
+    const jsonBytes = deoVrBuffer.subarray(4, 4 + len);
+    deoVrBuffer = deoVrBuffer.subarray(4 + len);
+    if (len === 0) continue;
+    try {
+      const parsed = JSON.parse(jsonBytes.toString('utf8'));
+      if (parsed && typeof parsed === 'object') deoVrEmitStatus(parsed);
+    } catch {
+      // ignore
+    }
+  }
+}
+
 let keepAwakeBlockId: number | null = null;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function createWindow() {
-  const preloadPath = path.join(__dirname, 'preload.js');
+  const preloadCjs = path.join(__dirname, 'preload.cjs');
+  const preloadJs = path.join(__dirname, 'preload.js');
+  const preloadPath = fs.existsSync(preloadCjs) ? preloadCjs : preloadJs;
   console.log('[Main] Creating window with preload:', preloadPath);
+  if (!fs.existsSync(preloadPath)) {
+    console.error('[Main] Preload script not found at:', preloadPath);
+  }
   
   mainWindow = new BrowserWindow({
     width: 1600,
@@ -188,9 +277,19 @@ async function createWindow() {
       preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,
       backgroundThrottling: false,
     },
   });
+
+  // Forward renderer/preload console output into the main process logs.
+  try {
+    mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+      console.log(`[Renderer][${level}] ${message} (${sourceId}:${line})`);
+    });
+  } catch {
+    // ignore
+  }
 
   // Extra safety: ensure Electron doesn't throttle this window when minimized/occluded.
   try {
@@ -203,6 +302,24 @@ async function createWindow() {
   console.log('[Main] Loading renderer:', file);
   await mainWindow.loadFile(file);
   console.log('[Main] Window loaded successfully');
+
+  // Sanity-check that preload executed and injected the API.
+  try {
+    const mvType = await mainWindow.webContents.executeJavaScript('typeof window.mv', true);
+    console.log(`[Main] typeof window.mv = ${String(mvType)}`);
+  } catch (err) {
+    const msg = (err as any)?.message ? String((err as any).message) : String(err);
+    console.warn('[Main] Unable to query window.mv:', msg);
+  }
+
+  // Helpful diagnostics when preload fails to execute.
+  try {
+    (mainWindow.webContents as any).on('preload-error', (...args: any[]) => {
+      console.error('[Main] preload-error:', ...args);
+    });
+  } catch {
+    // ignore
+  }
 }
 
 ipcMain.handle('power:setKeepAwake', async (_evt, enabled: boolean) => {
@@ -245,6 +362,83 @@ ipcMain.handle('serial:disconnect', async () => {
 
 ipcMain.handle('serial:send', async (_evt, line: string) => {
   driver.sendLine(line);
+});
+
+ipcMain.handle('deovr:connect', async (_evt, host: unknown, port: unknown) => {
+  const h = String(host ?? '').trim();
+  const p = Number(port ?? 23554);
+  if (!h) return { ok: false, error: 'host required' };
+  if (!Number.isFinite(p) || p <= 0) return { ok: false, error: 'invalid port' };
+
+  if (deoVrSocket && deoVrHost === h && !deoVrSocket.destroyed) return { ok: true, host: h };
+
+  const prevHost = deoVrHost;
+  deoVrHost = h;
+  deoVrCleanup();
+
+  return await new Promise<{ ok: boolean; host?: string; error?: string }>((resolve) => {
+    let resolved = false;
+    try {
+      const s = createConnection({ host: h, port: p }, () => {
+        deoVrSocket = s;
+        deoVrEmitConnection({ type: 'connected', host: h });
+        deoVrPingTimer = setInterval(() => deoVrWritePacket(null), 1000);
+        deoVrWritePacket(null);
+        if (!resolved) {
+          resolved = true;
+          resolve({ ok: true, host: h });
+        }
+      });
+      deoVrSocket = s;
+      s.on('data', deoVrOnData);
+      s.on('close', () => {
+        const cur = deoVrHost;
+        deoVrCleanup();
+        deoVrEmitConnection({ type: 'disconnected', host: cur || prevHost || undefined });
+      });
+      s.on('error', (err: any) => {
+        const msg = err && err.message ? String(err.message) : 'Socket error';
+        deoVrEmitConnection({ type: 'error', host: h, error: msg });
+        if (!resolved) {
+          resolved = true;
+          resolve({ ok: false, host: h, error: msg });
+        }
+        deoVrCleanup();
+      });
+    } catch (err: any) {
+      const msg = err && err.message ? String(err.message) : 'Connect failed';
+      deoVrEmitConnection({ type: 'error', host: h, error: msg });
+      deoVrCleanup();
+      if (!resolved) {
+        resolved = true;
+        resolve({ ok: false, host: h, error: msg });
+      }
+    }
+  });
+});
+
+ipcMain.handle('deovr:disconnect', async () => {
+  const cur = deoVrHost;
+  deoVrCleanup();
+  deoVrEmitConnection({ type: 'disconnected', host: cur || undefined });
+  return { ok: true };
+});
+
+ipcMain.handle('deovr:send', async (_evt, data: unknown) => {
+  const payload = data && typeof data === 'object' ? (data as any) : null;
+  if (payload && typeof payload === 'object' && Object.keys(payload).length === 0) {
+    deoVrWritePacket(null);
+    return { ok: true, ping: true };
+  }
+  deoVrWritePacket(payload);
+  return { ok: true };
+});
+
+ipcMain.handle('deovr:getConnectionInfo', async () => {
+  return {
+    ok: Boolean(deoVrSocket && !deoVrSocket.destroyed),
+    host: deoVrHost || undefined,
+  };
 });
 
 app.whenReady().then(async () => {
