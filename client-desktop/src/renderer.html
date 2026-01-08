@@ -3150,7 +3150,7 @@
           // Auto-home should also respond to manual pauses triggered via native video controls.
           if (v.paused) triggerAutoHome();
           else cancelAutoHome();
-          // Manual user interactions always sync (force=true), regardless of follow-remote state.
+          // Manual user interactions sync (force=true) when we're the driver.
           // Note: We intentionally do NOT run scheduled/"coordinated" start logic here because
           // programmatic play (e.g. from scheduleLocalPlayAt) also triggers these events.
           // Doing so would create a play->pause->play loop and spam the console.

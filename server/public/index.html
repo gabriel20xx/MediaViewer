@@ -649,14 +649,19 @@
         const remoteJumpedForward = remoteTimeMs - prevTimeMs > 2000;
         const remoteJumped = remoteJumpedBack || remoteJumpedForward;
         if (!Number.isFinite(currentTime) || remoteJumped || Math.abs(currentTime - targetTime) > 0.75) {
+          // Avoid echoing a remote-applied seek back as a forced local update.
+          suppressLocalVideoEventsUntil(Date.now() + 1200);
           try { v.currentTime = targetTime; } catch {}
         }
 
         if (treatAsPaused) {
+          // Avoid echoing a remote-applied pause back.
+          suppressLocalVideoEventsUntil(Date.now() + 1200);
           try { v.pause(); } catch {}
           if (playAtLocalMs != null && playAtLocalMs > now + 10) {
             // Ensure exact start position at playAt.
             const startTimeSeconds = (remoteTimeMs + Math.max(0, playAtLocalMs - baselineRemoteNow)) / 1000;
+            suppressLocalVideoEventsUntil(Date.now() + 1200);
             try { v.currentTime = startTimeSeconds; } catch {}
             scheduleLocalPlayAt(v, playAtLocalMs);
           } else {
@@ -664,6 +669,8 @@
           }
         } else {
           cancelScheduledPlay();
+          // Avoid echoing a remote-applied play back.
+          suppressLocalVideoEventsUntil(Date.now() + 1200);
           try { await v.play(); } catch {}
         }
       }
