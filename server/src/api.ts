@@ -425,7 +425,7 @@ export function buildApiRouter(opts: {
             st.paused = true;
             const tMs = Math.max(0, Math.round(st.lastTimeMs || 0));
             try {
-              opts.onVrStream({
+                Promise.resolve(opts.onVrStream({
                 sessionId: st.sessionId,
                 mediaId: st.mediaId,
                 fromClientId: st.fromClientId,
@@ -435,7 +435,7 @@ export function buildApiRouter(opts: {
                 paused: true,
                 fps: DEOVR_FPS,
                 frame: Math.max(0, Math.floor((tMs / 1000) * DEOVR_FPS)),
-              });
+                })).catch(() => {});
             } catch {
               // ignore
             }
@@ -458,17 +458,21 @@ export function buildApiRouter(opts: {
         if (shouldPublish) {
           st.lastPublishAtMs = now;
           lastVrStreamMediaByClient.set(key, id);
-          await opts.onVrStream({
-            sessionId,
-            mediaId: id,
-            fromClientId,
-            userAgent: ua || 'Unknown',
-            ipAddress,
-            timeMs: Math.max(0, Math.round(st.lastTimeMs || 0)),
-            paused: false,
-            fps: DEOVR_FPS,
-            frame: Math.max(0, Math.floor(((st.lastTimeMs || 0) / 1000) * DEOVR_FPS)),
-          });
+          try {
+            Promise.resolve(opts.onVrStream({
+              sessionId,
+              mediaId: id,
+              fromClientId,
+              userAgent: ua || 'Unknown',
+              ipAddress,
+              timeMs: Math.max(0, Math.round(st.lastTimeMs || 0)),
+              paused: false,
+              fps: DEOVR_FPS,
+              frame: Math.max(0, Math.floor(((st.lastTimeMs || 0) / 1000) * DEOVR_FPS)),
+            })).catch(() => {});
+          } catch {
+            // ignore
+          }
         }
       }
     } catch {
