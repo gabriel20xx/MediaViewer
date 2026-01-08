@@ -217,9 +217,21 @@
       function el(id) { return document.getElementById(id); }
 
       async function apiJson(url, opts) {
-        const res = await fetch(url, opts);
+        const o = opts ? { ...opts } : {};
+        // Avoid stale UI (e.g., scan progress) due to HTTP caching.
+        if (!('cache' in o)) o.cache = 'no-store';
+        const res = await fetch(url, o);
         if (!res.ok) throw new Error(await res.text());
         return res.json();
+      }
+
+      function scanProgressUrl() {
+        // Add a cache-buster in case any layer ignores fetch cache controls.
+        return `/api/scan/progress?t=${Date.now()}`;
+      }
+
+      async function getScanProgress() {
+        return apiJson(scanProgressUrl());
       }
 
       function sendClientStatus() {
@@ -1334,7 +1346,7 @@
           for (;;) {
             let p = null;
             try {
-              p = await apiJson('/api/scan/progress');
+              p = await getScanProgress();
             } catch (e) {
               const msg = (e && e.message) ? e.message : String(e);
               opShow(`Scan status unavailable: ${msg}`, { value: 1, max: 1 });
@@ -1370,7 +1382,7 @@
 
         async function resumeScanIfNeeded() {
           try {
-            const p = await apiJson('/api/scan/progress');
+            const p = await getScanProgress();
             if (p && p.isScanning) {
               state.isScanRunning = true;
               updateOperationButtons();
@@ -1397,7 +1409,7 @@
           try {
             // If a scan is already running (common after reload), follow it instead of POSTing.
             try {
-              const p = await apiJson('/api/scan/progress');
+              const p = await getScanProgress();
               if (p && p.isScanning) {
                 state.isScanRunning = true;
                 updateOperationButtons();
@@ -2340,7 +2352,7 @@
         // Probe scan state immediately so the scan indicator and button state are correct
         // even before the full grid UI finishes loading.
         try {
-          const p0 = await apiJson('/api/scan/progress');
+          const p0 = await getScanProgress();
           if (p0 && p0.isScanning) {
             state.isScanRunning = true;
             const msg = p0.message || 'Scanning...';
