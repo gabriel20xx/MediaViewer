@@ -384,7 +384,42 @@ function registerWsHandlers() {
 }
 
 async function main() {
+  const useSsl = env.USE_SSL;
   const autoSelfSigned = Boolean(env.HTTPS_AUTO_SELF_SIGNED);
+
+  if (useSsl === false) {
+    isHttpsEnabled = false;
+    const server = http.createServer(app);
+    activeServer = server;
+    wss = new WebSocketServer({ server: activeServer, path: '/ws' });
+    registerWsHandlers();
+    logStartupInfo();
+
+    await ensureSchema(db);
+
+    activeServer.listen(env.PORT, () => {
+      // eslint-disable-next-line no-console
+      console.log(`[MediaViewer] Server listening on :${env.PORT}`);
+      // eslint-disable-next-line no-console
+      console.log(`[MediaViewer] Web UI accessible at http://localhost:${env.PORT}/`);
+      // eslint-disable-next-line no-console
+      console.log(`[MediaViewer] Starting initial media scan in background...`);
+    });
+
+    const scanStart = Date.now();
+    upsertMediaFromDisk({ db, mediaRoot: env.MEDIA_ROOT })
+      .then((scan) => {
+        const scanMs = Date.now() - scanStart;
+        // eslint-disable-next-line no-console
+        console.log(`[MediaViewer] Initial scan complete: scanned=${scan.scanned}, upserted=${scan.upserted} (${scanMs}ms)`);
+      })
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error('[MediaViewer] Initial scan failed:', err);
+      });
+
+    return;
+  }
 
   let keyPath = (env.HTTPS_KEY_PATH || '').trim();
   let certPath = (env.HTTPS_CERT_PATH || '').trim();

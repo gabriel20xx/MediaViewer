@@ -67,6 +67,17 @@
         }
       }
 
+      function isClientIdConnected(clientId) {
+        const id = String(clientId || '').trim();
+        if (!id) return false;
+        try {
+          const clients = Array.isArray(state.clients) ? state.clients : [];
+          return clients.some((c) => c && String(c.clientId || '') === id);
+        } catch {
+          return false;
+        }
+      }
+
       function waitForVideoReadyAt(v, targetTimeSeconds, timeoutMs = 6000) {
         if (!(v instanceof HTMLVideoElement)) return Promise.resolve(false);
         const target = Number(targetTimeSeconds) || 0;
@@ -535,6 +546,10 @@
       async function applyRemoteSyncState(remote) {
         if (!remote) return;
         if (remote.fromClientId && remote.fromClientId === state.clientId) return;
+
+        // If the origin client isn't currently connected, treat the message as stale.
+        // This prevents old session state from overriding a local click-to-open.
+        if (remote.fromClientId && !isClientIdConnected(remote.fromClientId)) return;
 
         // Seek-sync: leader receives peer ready ACKs.
         if (remote.seekToken && String(remote.seekPhase) === 'ready') {

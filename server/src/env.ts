@@ -7,6 +7,20 @@ const EnvSchema = z.object({
     z.string().min(1)
   ),
   PORT: z.coerce.number().int().positive().default(3000),
+  USE_SSL: z.preprocess(
+    (v) => {
+      if (v === undefined || v === null) return undefined;
+      if (typeof v === 'boolean') return v;
+      if (typeof v === 'number') return v !== 0;
+      if (typeof v !== 'string') return undefined;
+      const s = v.trim().toLowerCase();
+      if (!s) return undefined;
+      if (s === '0' || s === 'false' || s === 'no' || s === 'off') return false;
+      if (s === '1' || s === 'true' || s === 'yes' || s === 'on') return true;
+      return undefined;
+    },
+    z.boolean().optional()
+  ),
   HTTPS_KEY_PATH: z.string().optional(),
   HTTPS_CERT_PATH: z.string().optional(),
   HTTPS_AUTO_SELF_SIGNED: z.preprocess(

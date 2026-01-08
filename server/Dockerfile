@@ -33,6 +33,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV HTTPS_AUTO_SELF_SIGNED=1
+ENV USE_SSL=false
 
 # Keep only prod deps in runtime
 COPY package.json package-lock.json* ./
