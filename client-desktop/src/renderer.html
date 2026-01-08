@@ -363,6 +363,9 @@
         smoothResumeFunscript: false,
         scheduledPlaySpec: '0.4',
         funscriptStats: null,
+        funscriptHalfActions: null,
+        funscriptHalfDerivatives: null,
+        funscriptHalfStats: null,
         smoothResumeStartAt: 0,
         smoothResumeUntil: 0,
         smoothResumePos: null,
@@ -372,8 +375,6 @@
         invertScript: false,
         halfScript: false,
         scriptDelay: 0,
-        _halfScriptCache: null,
-        _halfScriptWindowIdx: 0,
         autoConnectSerial: false,
         lastSerialPort: '',
         lastSerialBaud: 115200,
@@ -795,9 +796,10 @@
       }
 
       function setFsPill() {
-        const n = state.funscript?.actions?.length;
+        const actions = getActiveFunscriptActions();
+        const n = actions?.length;
         if (typeof n === 'number') {
-          const stats = state.funscriptStats;
+          const stats = getActiveFunscriptStats();
           if (stats && Number.isFinite(stats.actionCount) && stats.actionCount > 0 && Number.isFinite(stats.avgSpeed) && stats.avgSpeed >= 0) {
             const sp = stats.avgSpeed;
             fsPill.textContent = `Funscript: ${Math.round(stats.actionCount)} actions · ${sp.toFixed(sp >= 10 ? 0 : 1)}%/s`;
@@ -884,121 +886,135 @@
       }
 
       function funscriptTimeMsForPlaybackTimeMs(playbackTimeMs) {
-        const t = (Number(playbackTimeMs) || 0) - (Number(state.scriptDelay) || 0);
-        if (!state.halfScript) return t;
-
-        const actions = state.funscript?.actions;
-        if (!Array.isArray(actions) || actions.length < 3) return t;
-
-        const cache = state._halfScriptCache;
-        if (!cache || cache.actions !== actions || cache.actionsLen !== actions.length) {
-          state._halfScriptCache = {
-            actions,
-            actionsLen: actions.length,
-            windows: computeHalfScriptWindowsFromActions(actions),
-          };
-          state._halfScriptWindowIdx = 0;
-        }
-
-        const windows = state._halfScriptCache?.windows;
-        if (!Array.isArray(windows) || windows.length === 0) return t;
-
-        // Fast path: the playback time generally increases monotonically.
-        let idx = Number(state._halfScriptWindowIdx) || 0;
-        if (idx < 0) idx = 0;
-        if (idx >= windows.length) idx = windows.length - 1;
-
-        while (idx > 0 && t < windows[idx].windowStart) idx--;
-        while (idx < windows.length - 1 && t >= windows[idx].windowEnd) idx++;
-        state._halfScriptWindowIdx = idx;
-
-        const w = windows[idx];
-        if (!w || !(t >= w.windowStart)) return t;
-        if (t >= w.windowEnd) return Number(w.keepEnd) || t;
-
-        const windowLen = Number(w.windowEnd) - Number(w.windowStart);
-        const keepLen = Number(w.keepEnd) - Number(w.keepStart);
-        if (!(windowLen > 0) || !(keepLen >= 0)) return t;
-
-        const alpha = clamp((t - w.windowStart) / windowLen, 0, 1);
-        return Number(w.keepStart) + alpha * keepLen;
+        // Apply delay only. Half-script is implemented by transforming the actions, not by time scaling.
+        return (Number(playbackTimeMs) || 0) - (Number(state.scriptDelay) || 0);
       }
 
-      function computeHalfScriptWindowsFromActions(actions) {
-        // Compute full-stroke windows from extrema (peak/trough) indices.
-        // A "full stroke" here is two monotonic segments (e.g. 10→90→10).
-        // When enabled, we keep every other full stroke and time-stretch it to fill
-        // the dropped stroke's time window.
+      function getActiveFunscriptActions() {
+        if (!state.funscript?.actions?.length) return null;
+        if (state.halfScript && Array.isArray(state.funscriptHalfActions) && state.funscriptHalfActions.length) return state.funscriptHalfActions;
+        return state.funscript.actions;
+      }
+
+      function getActiveFunscriptDerivatives() {
+        if (!state.funscript?.actions?.length) return null;
+        if (state.halfScript && state.funscriptHalfDerivatives) return state.funscriptHalfDerivatives;
+        return state.funscriptDerivatives;
+      }
+
+      function getActiveFunscriptStats() {
+        if (!state.funscript?.actions?.length) return null;
+        if (state.halfScript && state.funscriptHalfStats) return state.funscriptHalfStats;
+        return state.funscriptStats;
+      }
+
+      function recomputeHalfScriptTransform() {
+        state.funscriptHalfActions = null;
+        state.funscriptHalfDerivatives = null;
+        state.funscriptHalfStats = null;
+        if (!state.halfScript) return;
+        if (!state.funscript?.actions?.length) return;
+
+        const half = computeHalfScriptActionsFromActions(state.funscript.actions);
+        if (!half || !Array.isArray(half) || half.length < 2) return;
+
+        state.funscriptHalfActions = half;
         try {
-          if (!Array.isArray(actions) || actions.length < 3) return [];
-
-          const extrema = [];
-          extrema.push(0);
-
-          let lastDir = 0;
-          const eps = 1e-6;
-
-          for (let i = 1; i < actions.length; i++) {
-            const p0 = Number(actions[i - 1]?.pos);
-            const p1 = Number(actions[i]?.pos);
-            const dp = p1 - p0;
-            if (!Number.isFinite(dp) || Math.abs(dp) < eps) continue;
-
-            const dir = dp > 0 ? 1 : -1;
-            if (lastDir === 0) {
-              lastDir = dir;
-              continue;
-            }
-            if (dir !== lastDir) {
-              const idx = i - 1;
-              const prev = extrema[extrema.length - 1];
-              if (idx > prev) extrema.push(idx);
-              lastDir = dir;
-            }
-          }
-
-          const lastIdx = actions.length - 1;
-          if (extrema[extrema.length - 1] !== lastIdx) extrema.push(lastIdx);
-
-          // Build full-stroke intervals using extrema[i] -> extrema[i+2].
-          const fullStrokes = [];
-          for (let i = 0; i + 2 < extrema.length; i += 2) {
-            const a0 = actions[extrema[i]];
-            const a2 = actions[extrema[i + 2]];
-            const start = Number(a0?.at) || 0;
-            const end = Number(a2?.at) || start;
-            if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
-              fullStrokes.push({ start, end });
-            }
-          }
-          if (fullStrokes.length === 0) return [];
-
-          const totalEnd = Number(actions[lastIdx]?.at) || fullStrokes[fullStrokes.length - 1].end;
-
-          // Windows are pairs of full strokes: keep even, drop odd.
-          const windows = [];
-          for (let i = 0; i < fullStrokes.length; i += 2) {
-            const keep = fullStrokes[i];
-            const drop = fullStrokes[i + 1] || null;
-            const windowStart = keep.start;
-            let windowEnd = drop ? drop.end : keep.end;
-            if (i + 2 >= fullStrokes.length && Number.isFinite(totalEnd) && totalEnd > windowEnd) {
-              // Extend the last window to the end of the script so the mapping covers the full duration.
-              windowEnd = totalEnd;
-            }
-            if (windowEnd <= windowStart) continue;
-            windows.push({
-              windowStart,
-              windowEnd,
-              keepStart: keep.start,
-              keepEnd: keep.end,
-            });
-          }
-
-          return windows;
+          state.funscriptHalfStats = computeFunscriptStatsFromActions(half);
         } catch {
-          return [];
+          state.funscriptHalfStats = null;
         }
+        try {
+          state.funscriptHalfDerivatives = computeFunscriptDerivatives(half);
+        } catch {
+          state.funscriptHalfDerivatives = null;
+        }
+      }
+
+      function computeHalfScriptActionsFromActions(actions) {
+        // Keep one full stroke (two segments) and stretch it to fill the next stroke's time.
+        // Full stroke is defined by 3 consecutive extrema (peak/trough) points.
+        if (!Array.isArray(actions) || actions.length < 3) return null;
+
+        const extrema = [];
+        extrema.push(0);
+
+        let lastDir = 0;
+        const eps = 1e-6;
+        for (let i = 1; i < actions.length; i++) {
+          const p0 = Number(actions[i - 1]?.pos);
+          const p1 = Number(actions[i]?.pos);
+          const dp = p1 - p0;
+          if (!Number.isFinite(dp) || Math.abs(dp) < eps) continue;
+          const dir = dp > 0 ? 1 : -1;
+          if (lastDir === 0) {
+            lastDir = dir;
+            continue;
+          }
+          if (dir !== lastDir) {
+            const idx = i - 1;
+            if (idx > extrema[extrema.length - 1]) extrema.push(idx);
+            lastDir = dir;
+          }
+        }
+
+        const lastIdx = actions.length - 1;
+        if (extrema[extrema.length - 1] !== lastIdx) extrema.push(lastIdx);
+        if (extrema.length < 3) return null;
+
+        const fullStrokes = [];
+        for (let i = 0; i + 2 < extrema.length; i += 2) {
+          const a0 = actions[extrema[i]];
+          const a2 = actions[extrema[i + 2]];
+          const start = Math.max(0, Math.round(Number(a0?.at) || 0));
+          const end = Math.max(start, Math.round(Number(a2?.at) || 0));
+          if (end > start) fullStrokes.push({ start, end });
+        }
+        if (fullStrokes.length === 0) return null;
+
+        const out = [];
+        let lastOutAt = -Infinity;
+
+        for (let i = 0; i < fullStrokes.length; i += 2) {
+          const keep = fullStrokes[i];
+          const drop = fullStrokes[i + 1] || null;
+
+          const windowStart = keep.start;
+          const windowEnd = drop ? drop.end : keep.end;
+          const keepStart = keep.start;
+          const keepEnd = keep.end;
+
+          const keepLen = keepEnd - keepStart;
+          const windowLen = windowEnd - windowStart;
+          if (!(keepLen > 0) || !(windowLen > 0)) continue;
+
+          const scale = windowLen / keepLen;
+
+          // Include actions within the kept stroke interval.
+          for (let ai = 0; ai < actions.length; ai++) {
+            const a = actions[ai];
+            const at = Math.round(Number(a?.at) || 0);
+            if (at < keepStart) continue;
+            if (at > keepEnd) break;
+            const pos = Number(a?.pos);
+            if (!Number.isFinite(pos)) continue;
+
+            const mappedAt = windowStart + (at - keepStart) * scale;
+            const newAt = Math.round(mappedAt);
+            if (newAt < 0) continue;
+
+            if (newAt === lastOutAt) {
+              // Prefer the latest value for duplicate timestamps.
+              out[out.length - 1] = { at: newAt, pos: pos };
+            } else if (newAt > lastOutAt) {
+              out.push({ at: newAt, pos: pos });
+              lastOutAt = newAt;
+            }
+          }
+        }
+
+        if (out.length < 2) return null;
+        return out;
       }
 
       function cancelAutoHome() {
@@ -1106,9 +1122,10 @@
         }
         if (Date.now() < (Number(state.serialResumeHoldUntil) || 0)) return;
 
-        const actions = state.funscript.actions;
+        const actions = getActiveFunscriptActions() || state.funscript.actions;
+        const deriv = getActiveFunscriptDerivatives();
         const scriptTimeMs = funscriptTimeMsForPlaybackTimeMs(timeMs);
-        const itp = interpolatePos(actions, scriptTimeMs, state.funIndex, state.interpolationMode, state.funscriptDerivatives);
+        const itp = interpolatePos(actions, scriptTimeMs, state.funIndex, state.interpolationMode, deriv);
         state.funIndex = itp.idx;
 
         const axis = String(state.axis || 'L0').toUpperCase();
@@ -1878,11 +1895,12 @@
         state.funscript = null;
         state.funscriptDerivatives = null;
         state.funscriptStats = null;
+        state.funscriptHalfActions = null;
+        state.funscriptHalfDerivatives = null;
+        state.funscriptHalfStats = null;
         state.funIndex = -1;
         state.funscriptPointer = -1;
         state.lastFunscriptValue = 0;
-        state._halfScriptCache = null;
-        state._halfScriptWindowIdx = 0;
         state.durationMs = null;
         state.noVideoBaseTimeMs = 0;
         state.noVideoAnchorAtMs = Date.now();
@@ -1944,14 +1962,18 @@
           } catch {
             state.funscriptDerivatives = null;
           }
+
+          // If half-script is enabled, precompute the transformed action list too.
+          recomputeHalfScriptTransform();
         } catch {
           if (openToken !== state._openMediaToken) return;
           if (!state.current || state.current.id !== id) return;
           state.funscript = null;
           state.funscriptDerivatives = null;
           state.funscriptStats = null;
-          state._halfScriptCache = null;
-          state._halfScriptWindowIdx = 0;
+          state.funscriptHalfActions = null;
+          state.funscriptHalfDerivatives = null;
+          state.funscriptHalfStats = null;
         }
 
         if (openToken !== state._openMediaToken) return;
@@ -2325,7 +2347,7 @@
         return Number.isFinite(ms) && ms > 0 ? Math.round(ms) : null;
       }
 
-      function drawFunscriptOverviewGraph(actions, ms) {
+      function drawFunscriptOverviewGraph(actions, ms, derivatives) {
         const canvas = $('funscriptOverviewGraph');
         if (!(canvas instanceof HTMLCanvasElement)) return;
         const ctx = canvas.getContext('2d');
@@ -2365,6 +2387,7 @@
           actions.length,
           maxAt,
           String(state.interpolationMode || 'spline'),
+          state.halfScript ? 'half' : 'full',
         ].join('|');
 
         if (!state._fsOverviewCache || state._fsOverviewCache.key !== cacheKey) {
@@ -2405,7 +2428,7 @@
           octx.beginPath();
           for (let i = 0; i <= sampleCount; i++) {
             const t = xMin + ((xMax - xMin) * i) / sampleCount;
-            const r = interpolatePos(actions, t, pointer, state.interpolationMode, state.funscriptDerivatives);
+            const r = interpolatePos(actions, t, pointer, state.interpolationMode, derivatives);
             pointer = r.idx;
             const pos = clamp(Number(r.pos) || 0, 0, 100);
             const px = xToPx(t);
@@ -2427,7 +2450,7 @@
           octx.beginPath();
           for (let i = 0; i <= sampleCount; i++) {
             const t = xMin + ((xMax - xMin) * i) / sampleCount;
-            const r = interpolatePos(actions, t, pointer, state.interpolationMode, state.funscriptDerivatives);
+            const r = interpolatePos(actions, t, pointer, state.interpolationMode, derivatives);
             pointer = r.idx;
             const pos = clamp(Number(r.pos) || 0, 0, 100);
             const px = xToPx(t);
@@ -2459,7 +2482,7 @@
         ctx.stroke();
 
         // Position dot
-        const r = interpolatePos(actions, clampedMs, state.funscriptPointer, state.interpolationMode, state.funscriptDerivatives);
+        const r = interpolatePos(actions, clampedMs, state.funscriptPointer, state.interpolationMode, derivatives);
         const pos = clamp(Number(r.pos) || 0, 0, 100);
         ctx.fillStyle = 'rgba(255,255,255,0.9)';
         ctx.beginPath();
@@ -2467,7 +2490,7 @@
         ctx.fill();
       }
 
-      function drawFunscriptGraph(actions, ms) {
+      function drawFunscriptGraph(actions, ms, derivatives) {
         const canvas = $('funscriptGraph');
         if (!(canvas instanceof HTMLCanvasElement)) return;
         const ctx = canvas.getContext('2d');
@@ -2522,7 +2545,7 @@
 
         for (let i = 0; i <= sampleCount; i++) {
           const t = xMin + ((xMax - xMin) * i) / sampleCount;
-          const r = interpolatePos(actions, t, pointer, state.interpolationMode, state.funscriptDerivatives);
+          const r = interpolatePos(actions, t, pointer, state.interpolationMode, derivatives);
           pointer = r.idx;
           const pos = clamp(Number(r.pos) || 0, 0, 100);
           const pt = { t, pos, x: xToPx(t), y: yToPx(pos) };
@@ -2551,7 +2574,7 @@
         ctx.stroke();
 
         // Current position marker
-        const itp = interpolatePos(actions, ms, state.funscriptPointer, state.interpolationMode, state.funscriptDerivatives);
+        const itp = interpolatePos(actions, ms, state.funscriptPointer, state.interpolationMode, derivatives);
         const curPos = clamp(Number(itp.pos) || 0, 0, 100);
         ctx.fillStyle = 'rgba(255,255,255,0.9)';
         ctx.beginPath();
@@ -2564,7 +2587,8 @@
 
         // (Graph drawing is handled by clearFunscriptGraph/drawFunscriptGraph)
 
-        const actions = state.funscript?.actions;
+        const actions = getActiveFunscriptActions();
+        const deriv = getActiveFunscriptDerivatives();
         if (!actions || !Array.isArray(actions) || actions.length === 0) {
           funscriptStatusEl.textContent = 'Funscript: not loaded';
           funscriptMeterEl.style.transform = 'scaleX(0)';
@@ -2578,7 +2602,7 @@
         }
 
         const driveStatus = state.drive ? 'Drive: ON' : 'Drive: OFF';
-        const stats = state.funscriptStats;
+        const stats = getActiveFunscriptStats();
         const spTxt = (stats && Number.isFinite(stats.avgSpeed) && stats.avgSpeed >= 0)
           ? ` · ${stats.avgSpeed.toFixed(stats.avgSpeed >= 10 ? 0 : 1)}%/s`
           : '';
@@ -2586,7 +2610,7 @@
 
         const ms = Number.isFinite(timeMs) ? Math.max(0, timeMs) : 0;
         const scriptMs = funscriptTimeMsForPlaybackTimeMs(ms);
-        const itp = interpolatePos(actions, scriptMs, state.funscriptPointer, state.interpolationMode, state.funscriptDerivatives);
+        const itp = interpolatePos(actions, scriptMs, state.funscriptPointer, state.interpolationMode, deriv);
         state.funscriptPointer = itp.idx;
         let pos = itp.pos;
         if (!Number.isFinite(pos)) pos = 0;
@@ -2598,8 +2622,8 @@
         const axis = String(state.axis || 'L0').toUpperCase();
         funscriptLabelEl.textContent = `${axis}: ${Math.round(pct)}% (${tcodeVal})`;
 
-        drawFunscriptGraph(actions, scriptMs);
-        drawFunscriptOverviewGraph(actions, scriptMs);
+        drawFunscriptGraph(actions, scriptMs, deriv);
+        drawFunscriptOverviewGraph(actions, scriptMs, deriv);
       }
 
       function formatTime(ms) {
@@ -2902,8 +2926,10 @@
         };
         savePrefs();
 
-        state._halfScriptCache = null;
-        state._halfScriptWindowIdx = 0;
+        recomputeHalfScriptTransform();
+        state.funIndex = -1;
+        state.funscriptPointer = -1;
+        state._fsOverviewCache = null;
         
         // Update UI
         $('invertScriptCheck').checked = false;
@@ -2931,8 +2957,11 @@
 
       $('halfScriptCheck').addEventListener('change', () => {
         state.halfScript = $('halfScriptCheck').checked;
-        state._halfScriptCache = null;
-        state._halfScriptWindowIdx = 0;
+        recomputeHalfScriptTransform();
+        state.funIndex = -1;
+        state.funscriptPointer = -1;
+        state._fsOverviewCache = null;
+        setFsPill();
         savePrefs();
       });
 
