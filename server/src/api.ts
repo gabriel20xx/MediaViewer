@@ -59,6 +59,10 @@ export function buildApiRouter(opts: {
     fromClientId: string;
     userAgent: string;
     ipAddress: string;
+    timeMs: number;
+    paused: boolean;
+    fps: number;
+    frame: number;
   }) => Promise<void> | void;
 }) {
   const { db, mediaRoot } = opts;
@@ -66,6 +70,69 @@ export function buildApiRouter(opts: {
 
   // Deduplicate per (sessionId, vr client) so Range requests don't spam sync.
   const lastVrStreamMediaByClient = new Map<string, string>();
+
+  // DeoVR doesn't send explicit playback events. We approximate play/pause/time based on
+  // ongoing stream Range requests (heartbeat):
+  // - When requests start/resume, mark playing and advance timeMs by wall-clock.
+  // - When requests stop for a short period, mark paused.
+  const deovrPlaybackByKey = new Map<
+    string,
+    {
+      sessionId: string;
+      fromClientId: string;
+      ipAddress: string;
+      userAgent: string;
+      mediaId: string;
+      startedAtMs: number;
+      lastSeenAtMs: number;
+      lastPublishAtMs: number;
+      lastTimeMs: number;
+      paused: boolean;
+    }
+  >();
+
+  const DEOVR_FPS = 30;
+  const DEOVR_PUBLISH_MIN_MS = 750;
+  const DEOVR_STALE_TO_PAUSE_MS = 2000;
+  const DEOVR_FORGET_MS = 60_000;
+
+  // Background pause detection for DeoVR sources.
+  setInterval(() => {
+    if (!opts.onVrStream) return;
+    const now = Date.now();
+    for (const [key, st] of Array.from(deovrPlaybackByKey.entries())) {
+      if (!st) {
+        deovrPlaybackByKey.delete(key);
+        continue;
+      }
+
+      const age = now - (st.lastSeenAtMs || 0);
+      if (age > DEOVR_FORGET_MS) {
+        deovrPlaybackByKey.delete(key);
+        continue;
+      }
+
+      if (!st.paused && age > DEOVR_STALE_TO_PAUSE_MS) {
+        st.paused = true;
+        st.lastPublishAtMs = now;
+        try {
+          opts.onVrStream({
+            sessionId: st.sessionId,
+            mediaId: st.mediaId,
+            fromClientId: st.fromClientId,
+            userAgent: st.userAgent || 'Unknown',
+            ipAddress: st.ipAddress || 'unknown',
+            timeMs: Math.max(0, Math.round(st.lastTimeMs || 0)),
+            paused: true,
+            fps: DEOVR_FPS,
+            frame: Math.max(0, Math.floor(((st.lastTimeMs || 0) / 1000) * DEOVR_FPS)),
+          });
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }, 500).unref?.();
 
   function normalizeIp(ip: string): string {
     // Express may provide ::ffff:1.2.3.4 or ::1
@@ -327,10 +394,51 @@ export function buildApiRouter(opts: {
         const ipAddress = normalizeIp(String(req.ip || (req.socket as any)?.remoteAddress || ''));
         const fromClientId = `vr:deovr:${ipAddress}`;
         const key = `${sessionId}|${fromClientId}`;
-        const prev = lastVrStreamMediaByClient.get(key);
-        if (prev !== id) {
+
+        const now = Date.now();
+        let st = deovrPlaybackByKey.get(key);
+
+        // Start / media switch.
+        if (!st || st.mediaId !== id) {
+          st = {
+            sessionId,
+            fromClientId,
+            ipAddress,
+            userAgent: ua || 'Unknown',
+            mediaId: id,
+            startedAtMs: now,
+            lastSeenAtMs: now,
+            lastPublishAtMs: 0,
+            lastTimeMs: 0,
+            paused: false,
+          };
+          deovrPlaybackByKey.set(key, st);
+        }
+
+        // Resume from paused: keep time continuity.
+        if (st.paused) {
+          st.paused = false;
+          st.startedAtMs = now - (st.lastTimeMs || 0);
+        }
+
+        st.lastSeenAtMs = now;
+        st.lastTimeMs = Math.max(0, now - (st.startedAtMs || now));
+
+        const shouldPublish = (now - (st.lastPublishAtMs || 0) >= DEOVR_PUBLISH_MIN_MS) || (lastVrStreamMediaByClient.get(key) !== id);
+        if (shouldPublish) {
+          st.lastPublishAtMs = now;
           lastVrStreamMediaByClient.set(key, id);
-          await opts.onVrStream({ sessionId, mediaId: id, fromClientId, userAgent: ua || 'Unknown', ipAddress });
+          await opts.onVrStream({
+            sessionId,
+            mediaId: id,
+            fromClientId,
+            userAgent: ua || 'Unknown',
+            ipAddress,
+            timeMs: Math.max(0, Math.round(st.lastTimeMs || 0)),
+            paused: false,
+            fps: DEOVR_FPS,
+            frame: Math.max(0, Math.floor(((st.lastTimeMs || 0) / 1000) * DEOVR_FPS)),
+          });
         }
       }
     } catch {

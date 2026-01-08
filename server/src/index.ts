@@ -30,15 +30,16 @@ app.use('/api', buildApiRouter({
   db,
   mediaRoot: env.MEDIA_ROOT,
   onVrStream: async (info) => {
-    // Stream request indicates actual playback start from a VR app (e.g. DeoVR).
+    // Stream request indicates actual playback from a VR app (e.g. DeoVR).
+    // For DeoVR we estimate time/pause based on stream heartbeat.
     await publishExternalSyncUpdate({
       sessionId: info.sessionId,
       mediaId: info.mediaId,
       fromClientId: info.fromClientId,
-      timeMs: 0,
-      paused: false,
-      fps: 30,
-      frame: 0,
+      timeMs: typeof (info as any).timeMs === 'number' ? (info as any).timeMs : 0,
+      paused: Boolean((info as any).paused),
+      fps: typeof (info as any).fps === 'number' ? (info as any).fps : 30,
+      frame: typeof (info as any).frame === 'number' ? (info as any).frame : 0,
     });
   },
 }));
