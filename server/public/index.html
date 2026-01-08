@@ -54,6 +54,7 @@
         thumbCache: {},
         _durToken: 0,
         _metaToken: 0,
+        _openToken: 0,
         view: 'grid', // grid | player | vr
         current: null,
         clientId: null,
@@ -1038,7 +1039,9 @@
       }
 
       async function openById(id) {
-        const item = state.items.find((x) => x.id === id) || (await apiJson(`/api/media/${id}/fileinfo`).then(() => ({ id })));
+        const token = ++state._openToken;
+        const item = await getItemInfo(id);
+        if (token !== state._openToken) return;
         setView('player', { id, item });
       }
 
@@ -2307,12 +2310,16 @@
       }
 
       window.__openPlayer = async (id) => {
+        const token = ++state._openToken;
         const item = await getItemInfo(id);
+        if (token !== state._openToken) return;
         setView('player', { id, item });
         sendSyncUpdate({ mediaId: id, timeMs: 0, paused: true, fps: 30, frame: 0 });
       };
       window.__openVr = async (id) => {
+        const token = ++state._openToken;
         const item = await getItemInfo(id);
+        if (token !== state._openToken) return;
         setView('vr', { id, item });
       };
 
@@ -2321,7 +2328,9 @@
       }
 
       window.__openBest = async (id) => {
+        const token = ++state._openToken;
         const item = await getItemInfo(id);
+        if (token !== state._openToken) return;
         const isVr = Boolean(item?.isVr);
 
         if (!isVr) {
