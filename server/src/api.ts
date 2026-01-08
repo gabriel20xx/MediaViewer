@@ -320,7 +320,9 @@ export function buildApiRouter(opts: {
       const mvFrom = String((req.query as any)?.mvFrom ?? '').trim().toLowerCase();
       // If the desktop initiated the stream URL (e.g. via DeoVR remote control), don't
       // infer DeoVR as the leader. Desktop will publish the authoritative sync state.
-      if (opts.onVrStream && ua.includes('DeoVR') && mvFrom !== 'desktop') {
+      const isDesktopInitiated = mvFrom === 'desktop';
+      const isDeoVr = mvFrom === 'deovr' || ua.toLowerCase().includes('deovr');
+      if (opts.onVrStream && isDeoVr && !isDesktopInitiated) {
         const sessionId = String((req.query as any)?.sessionId ?? 'default').trim() || 'default';
         const ipAddress = normalizeIp(String(req.ip || (req.socket as any)?.remoteAddress || ''));
         const fromClientId = `vr:deovr:${ipAddress}`;

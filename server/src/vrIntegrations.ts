@@ -218,7 +218,7 @@ export function registerVrIntegrations(
     // which would make the desktop follow a seemingly random item.
     // We emit the sync signal on the actual stream request (/api/media/:id/stream) instead.
     const sessionId = String(req.query.sessionId ?? 'default').trim() || 'default';
-    const sessionQs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
+    const sessionQs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}&mvFrom=deovr` : '?mvFrom=deovr';
 
     const stereo = (item.vrStereo === 'sbs' || item.vrStereo === 'tb' || item.vrStereo === 'mono')
       ? (item.vrStereo as any)
