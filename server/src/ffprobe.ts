@@ -12,6 +12,36 @@ export type VrProbe = {
   reason: string;
 };
 
+function runFfprobeJson(args: string[], timeoutMs: number): Promise<string | null> {
+  return new Promise<string | null>((resolve) => {
+    const ffprobe = (process.env.FFPROBE_PATH || 'ffprobe').trim() || 'ffprobe';
+    const child = spawn(ffprobe, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+    let settled = false;
+    let stdout = '';
+
+    const finish = (val: string | null) => {
+      if (settled) return;
+      settled = true;
+      try { clearTimeout(t); } catch {}
+      resolve(val);
+    };
+
+    const t = setTimeout(() => {
+      try { child.kill(); } catch {}
+      finish(null);
+    }, Math.max(250, timeoutMs | 0));
+
+    child.stdout.on('data', (d) => (stdout += d.toString('utf8')));
+    child.on('error', () => finish(null));
+    child.on('close', (code) => {
+      if (code !== 0) return finish(null);
+      if (!stdout.trim()) return finish(null);
+      finish(stdout);
+    });
+  });
+}
+
 function lower(v: unknown): string {
   return String(v ?? '').toLowerCase();
 }
@@ -61,25 +91,8 @@ function fovFromDimensions(width: number, height: number): 180 | 360 | null {
 }
 
 export async function probeVrWithFfprobe(absPath: string): Promise<VrProbe | null> {
-  const ffprobe = (process.env.FFPROBE_PATH || 'ffprobe').trim() || 'ffprobe';
-
   const args = ['-v', 'error', '-print_format', 'json', '-show_streams', '-show_format', '-i', absPath];
-
-  const out = await new Promise<string | null>((resolve) => {
-    const child = spawn(ffprobe, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-
-    child.stdout.on('data', (d) => (stdout += d.toString('utf8')));
-    child.stderr.on('data', (d) => (stderr += d.toString('utf8')));
-
-    child.on('error', () => resolve(null));
-    child.on('close', (code) => {
-      if (code !== 0) return resolve(null);
-      if (!stdout.trim()) return resolve(null);
-      resolve(stdout);
-    });
-  });
+  const out = await runFfprobeJson(args, 15000);
 
   if (!out) return null;
 
@@ -144,21 +157,8 @@ export async function probeVrWithFfprobe(absPath: string): Promise<VrProbe | nul
 }
 
 export async function probeDurationMsWithFfprobe(absPath: string): Promise<number | null> {
-  const ffprobe = (process.env.FFPROBE_PATH || 'ffprobe').trim() || 'ffprobe';
   const args = ['-v', 'error', '-print_format', 'json', '-show_format', '-i', absPath];
-
-  const out = await new Promise<string | null>((resolve) => {
-    const child = spawn(ffprobe, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '';
-
-    child.stdout.on('data', (d) => (stdout += d.toString('utf8')));
-    child.on('error', () => resolve(null));
-    child.on('close', (code) => {
-      if (code !== 0) return resolve(null);
-      if (!stdout.trim()) return resolve(null);
-      resolve(stdout);
-    });
-  });
+  const out = await runFfprobeJson(args, 15000);
 
   if (!out) return null;
   try {

@@ -1464,6 +1464,16 @@
           }
         }
 
+        // Expose for boot code (boot runs before first renderGrid())
+        try {
+          window.resumeScanIfNeeded = resumeScanIfNeeded;
+          window.waitForScanCompletion = waitForScanCompletion;
+          window.startScanProgressPolling = startScanProgressPolling;
+          window.stopScanProgressPolling = stopScanProgressPolling;
+        } catch {
+          // ignore
+        }
+
         el('scan').addEventListener('click', async () => {
           try {
             // If a scan is already running (common after reload), follow it instead of POSTing.
@@ -2417,7 +2427,6 @@
             const msg = p0.message || 'Scanning...';
             const scanned = typeof p0.scanned === 'number' ? p0.scanned : 0;
             state._scanUiText = `${msg} (${scanned} files)`;
-            opShow(state._scanUiText, 'indeterminate');
           } else {
             state.isScanRunning = false;
             state._scanUiText = '';
@@ -2431,6 +2440,15 @@
 
         await loadList();
         render();
+
+        // After first render, resume scan polling so the count keeps updating.
+        try {
+          if (typeof window.resumeScanIfNeeded === 'function') {
+            await window.resumeScanIfNeeded();
+          }
+        } catch {
+          // ignore
+        }
       })();
     </script>
   </head>
