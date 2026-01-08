@@ -270,7 +270,10 @@ export function buildApiRouter(opts: {
     // "this is playing" signal (DeoVR may prefetch /deovr/video/:id JSON for many items).
     try {
       const ua = String(req.get('user-agent') || '').trim();
-      if (opts.onVrStream && ua.includes('DeoVR')) {
+      const mvFrom = String((req.query as any)?.mvFrom ?? '').trim().toLowerCase();
+      // If the desktop initiated the stream URL (e.g. via DeoVR remote control), don't
+      // infer DeoVR as the leader. Desktop will publish the authoritative sync state.
+      if (opts.onVrStream && ua.includes('DeoVR') && mvFrom !== 'desktop') {
         const sessionId = String((req.query as any)?.sessionId ?? 'default').trim() || 'default';
         const ipAddress = normalizeIp(String(req.ip || (req.socket as any)?.remoteAddress || ''));
         const fromClientId = `vr:deovr:${ipAddress}`;

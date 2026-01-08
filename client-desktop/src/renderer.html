@@ -428,6 +428,7 @@
         _deoVrReconnectAt: 0,
         _deoVrReconnectDelayMs: 1000,
         _lastDeoVrSyncSentAt: 0,
+        _deoVrSuppressIncomingUntil: 0,
       };
 
       function parseDeoVrHostFromSourceId(sourceId) {
@@ -436,6 +437,74 @@
         if (!id.startsWith(prefix)) return null;
         const host = id.slice(prefix.length).trim();
         return host ? host : null;
+      }
+
+      function isVrSourceId(sourceId) {
+        const id = String(sourceId || '').trim();
+        return id.startsWith('vr:');
+      }
+
+      function isDrivingDeoVr() {
+        // Desktop is the leader when followRemote is OFF.
+        if (state.followRemote) return false;
+        const src = String(state.followSource || '').trim();
+        if (!src || !src.startsWith('vr:deovr:')) return false;
+        try {
+          if (!(window.mv && typeof window.mv.deoVrGetConnectionInfo === 'function')) return false;
+          const info = window.mv.deoVrGetConnectionInfo();
+          return Boolean(info && info.ok);
+        } catch {
+          return false;
+        }
+      }
+
+      function buildDeoVrStreamUrl(mediaId) {
+        if (!mediaId) return null;
+        try {
+          const u = new URL(`/api/media/${encodeURIComponent(String(mediaId))}/stream`, state.serverUrl);
+          // Keep the session attribution.
+          u.searchParams.set('sessionId', String(state.sessionId || 'default'));
+          // Mark this stream as desktop-initiated so the server doesn't infer DeoVR as the leader.
+          u.searchParams.set('mvFrom', 'desktop');
+          return u.toString();
+        } catch {
+          return null;
+        }
+      }
+
+      function maybeWarnIfServerUrlLikelyUnreachableFromHeadset() {
+        try {
+          const u = new URL(state.serverUrl);
+          const host = String(u.hostname || '').toLowerCase();
+          if (host === 'localhost' || host === '127.0.0.1') {
+            logToConsole('warn', 'DeoVR remote: serverUrl is localhost; headset likely cannot reach the stream URL. Set serverUrl to your LAN IP.');
+          }
+        } catch {}
+      }
+
+      function sendDeoVrCommandFromSyncUpdate(update) {
+        if (!isDrivingDeoVr()) return;
+        if (!(window.mv && typeof window.mv.deoVrSend === 'function')) return;
+
+        const mediaId = update && update.mediaId ? String(update.mediaId) : '';
+        if (!mediaId) return;
+        const path = buildDeoVrStreamUrl(mediaId);
+        if (!path) return;
+
+        const timeMs = typeof update.timeMs === 'number' && Number.isFinite(update.timeMs) ? update.timeMs : 0;
+        const paused = Boolean(update.paused);
+        const currentTime = Math.max(0, timeMs / 1000);
+        const playerState = paused ? 1 : 0;
+
+        // When we issue commands, ignore DeoVR's immediate 1Hz status echo for a short window
+        // to prevent it from stealing leadership / causing jitter.
+        state._deoVrSuppressIncomingUntil = Date.now() + 1500;
+
+        maybeWarnIfServerUrlLikelyUnreachableFromHeadset();
+
+        try {
+          window.mv.deoVrSend({ path, currentTime, playerState });
+        } catch {}
       }
 
       function tryParseMediaIdFromDeoVrPath(p) {
@@ -787,6 +856,9 @@
 
       function getControlTargetClientId() {
         const id = String(state.followSource || '').trim();
+        // VR integrations are not WS clients, so targeted control doesn't apply.
+        // Returning null makes the update broadcast to the whole session.
+        if (id && isVrSourceId(id)) return null;
         return id ? id : null;
       }
 
@@ -1541,6 +1613,12 @@
         const target = typeof toClientId === 'string' ? toClientId.trim() : '';
         if (target) payload.toClientId = target;
         state.ws.send(JSON.stringify(payload));
+
+        // Two-way control: when Desktop is the leader and DeoVR is the selected source,
+        // push remote-control commands to DeoVR to follow our state.
+        if (!state.followRemote) {
+          sendDeoVrCommandFromSyncUpdate(update);
+        }
       }
 
       function unloadCurrentMedia(reason) {
@@ -3349,6 +3427,10 @@
           window.mv.deoVrOnStatus((s) => {
             const sourceId = String(state._deoVrSourceId || '').trim();
             if (!sourceId) return;
+
+            // If desktop is driving DeoVR, ignore echoed status for a moment.
+            if (Date.now() < (Number(state._deoVrSuppressIncomingUntil) || 0)) return;
+
             const mediaId = tryParseMediaIdFromDeoVrPath(s && s.path);
             if (!mediaId) return;
             const currentTime = typeof s.currentTime === 'number' && Number.isFinite(s.currentTime) ? s.currentTime : 0;
