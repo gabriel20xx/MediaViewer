@@ -276,6 +276,20 @@ function registerWsHandlers() {
     const msg = safeJsonParse(text);
     if (!msg || typeof msg.type !== 'string') return;
 
+    if (msg.type === 'ws:ping') {
+      const nonce = typeof (msg as any).nonce === 'string' ? String((msg as any).nonce) : '';
+      const clientSentAt = typeof (msg as any).clientSentAt === 'number' ? (msg as any).clientSentAt : null;
+      ws.send(
+        JSON.stringify({
+          type: 'ws:pong',
+          nonce,
+          clientSentAt,
+          serverReceivedAt: Date.now(),
+        })
+      );
+      return;
+    }
+
     if (msg.type === 'sync:hello') {
       const clientId = String(msg.clientId ?? '').trim();
       const sessionId = String(msg.sessionId ?? 'default').trim() || 'default';

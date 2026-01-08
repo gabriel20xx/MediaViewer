@@ -389,6 +389,12 @@
         sessionId: 'default',
         ws: null,
         wsConnected: false,
+        wsPingTimer: null,
+        wsLastPingNonce: null,
+        wsLastPingSentAtMs: 0,
+        wsLastPongAtMs: 0,
+        wsRttMs: null,
+        wsRttEmaMs: null,
         applyingRemoteUntil: 0,
         lastSyncSentAt: 0,
         lastPlaybackPutAt: 0,
@@ -976,7 +982,15 @@
       }
 
       function setWsPill(connected) {
-        wsPill.textContent = connected ? 'Server: connected' : 'Server: disconnected';
+        let suffix = '';
+        if (connected) {
+          const now = Date.now();
+          const rtt = typeof state.wsRttEmaMs === 'number' && Number.isFinite(state.wsRttEmaMs) ? Math.round(state.wsRttEmaMs) : null;
+          const isFresh = typeof state.wsLastPongAtMs === 'number' && state.wsLastPongAtMs > 0 && now - state.wsLastPongAtMs <= 5000;
+          if (rtt !== null && isFresh) suffix = ` · RTT ${rtt}ms`;
+        }
+
+        wsPill.textContent = connected ? `Server: connected${suffix}` : 'Server: disconnected';
         wsPill.className = connected ? 'pill connected' : 'pill disconnected';
       }
 
@@ -1552,15 +1566,35 @@
         const ws = new WebSocket(wsUrlFromHttp(state.serverUrl));
         state.ws = ws;
 
+        const stopPing = () => {
+          if (state.wsPingTimer) {
+            window.clearInterval(state.wsPingTimer);
+            state.wsPingTimer = null;
+          }
+        };
+
+        const startPing = () => {
+          stopPing();
+          state.wsPingTimer = window.setInterval(() => {
+            if (!state.wsConnected || !state.ws || state.ws.readyState !== 1) return;
+            const nonce = Math.random().toString(16).slice(2);
+            state.wsLastPingNonce = nonce;
+            state.wsLastPingSentAtMs = Date.now();
+            state.ws.send(JSON.stringify({ type: 'ws:ping', nonce, clientSentAt: state.wsLastPingSentAtMs }));
+          }, 1000);
+        };
+
         ws.addEventListener('open', () => {
           state.wsConnected = true;
           setStatus('WS connected');
           setWsPill(true);
           ws.send(JSON.stringify({ type: 'sync:hello', clientId: state.clientId, sessionId: state.sessionId }));
+          startPing();
         });
 
         ws.addEventListener('close', () => {
           state.wsConnected = false;
+          stopPing();
           setStatus('WS disconnected');
           setWsPill(false);
           window.setTimeout(() => connectWs(), 1000);
@@ -1569,6 +1603,26 @@
         ws.addEventListener('message', (evt) => {
           let msg;
           try { msg = JSON.parse(String(evt.data)); } catch { return; }
+
+          if (msg && msg.type === 'ws:pong') {
+            const nonce = typeof msg.nonce === 'string' ? msg.nonce : null;
+            const sentAt = typeof msg.clientSentAt === 'number' ? msg.clientSentAt : NaN;
+            if (nonce && state.wsLastPingNonce && nonce !== state.wsLastPingNonce) return;
+            if (!Number.isFinite(sentAt) || sentAt <= 0) return;
+
+            const rtt = Date.now() - sentAt;
+            if (Number.isFinite(rtt) && rtt >= 0 && rtt <= 60_000) {
+              state.wsRttMs = rtt;
+              const alpha = 0.2;
+              state.wsRttEmaMs = typeof state.wsRttEmaMs === 'number' && Number.isFinite(state.wsRttEmaMs)
+                ? state.wsRttEmaMs * (1 - alpha) + rtt * alpha
+                : rtt;
+              state.wsLastPongAtMs = Date.now();
+              setWsPill(true);
+            }
+            return;
+          }
+
           if (!msg || msg.type !== 'sync:state' || !msg.state) return;
 
           // Keep an estimate of server clock offset even when we're not actively following.
