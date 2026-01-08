@@ -3001,7 +3001,8 @@
 
         updateFunscriptUi(timeMs);
 
-        const canReport = Boolean(state.current) && (!state.noVideo ? (v instanceof HTMLVideoElement && Number.isFinite(v.currentTime)) : true);
+        const currentId = state.current && state.current.id ? String(state.current.id) : '';
+        const canReport = Boolean(currentId) && (!state.noVideo ? (v instanceof HTMLVideoElement && Number.isFinite(v.currentTime)) : true);
 
         if (canReport) {
           $('playback').textContent = `t=${timeMs}ms frame=${frame} fps=${fps}`;
@@ -3015,7 +3016,7 @@
                   headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({
                     clientId: state.clientId,
-                    mediaId: state.current.id,
+                    mediaId: currentId,
                     timeMs,
                     fps,
                     frame
@@ -3025,12 +3026,19 @@
             }
           }
 
+          // state.current can be cleared (e.g., server restart / follow-source disconnect)
+          // while we're awaiting the playback PUT above.
+          if (!state.current || String(state.current.id || '') !== currentId) {
+            window.requestAnimationFrame(tick);
+            return;
+          }
+
           // Publish sync state only when we're the "driver".
           // If followRemote is ON, we shouldn't send updates.
           // Throttle automatic updates to prevent feedback loops.
           if (!state.followRemote) {
             if (Date.now() >= state.applyingRemoteUntil) {
-              sendSyncUpdate({ mediaId: state.current.id, timeMs, paused, fps, frame }, false, getControlTargetClientId());
+              sendSyncUpdate({ mediaId: currentId, timeMs, paused, fps, frame }, false, getControlTargetClientId());
             }
           }
         }
