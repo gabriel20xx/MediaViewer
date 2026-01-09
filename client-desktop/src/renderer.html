@@ -118,11 +118,7 @@
           <div class="stack">
             <div class="row">
               <select id="axisSelect" style="max-width: 220px;">
-                <option value="L0">L0 (Stroke)</option>
-                <option value="L1">L1 (Twist)</option>
-                <option value="L2">L2 (Roll)</option>
-                <option value="L3">L3 (Pitch)</option>
-                <option value="CUSTOM">Custom…</option>
+                <!-- options are populated dynamically in JS (enabled axes + Custom…) -->
               </select>
               <input id="axisCustom" value="L0" style="max-width: 120px; display:none;" />
               <button id="btnAxis0" style="max-width: 70px;">0%</button>
@@ -295,39 +291,14 @@
         </div>
 
         <div style="margin-bottom:30px;">
+          <h3 style="color:#fff;">Enabled Axes</h3>
+          <div id="axisEnabledContainer" style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:10px;"></div>
+          <div style="color:#888; font-size:0.9em; margin-top:6px;">Disabled axes are hidden from the axis dropdown and won’t send output.</div>
+        </div>
+
+        <div style="margin-bottom:30px;">
           <h3 style="color:#fff;">Axis Position Limits</h3>
-          
-          <div style="margin-bottom:20px;">
-            <label style="display:block; color:#fff; margin-bottom:5px;">L0 (Stroke) - Min: <span id="L0MinLabel">0</span>% | Max: <span id="L0MaxLabel">100</span>%</label>
-            <div style="display:flex; gap:15px; align-items:center;">
-              <input type="range" id="L0MinSlider" min="0" max="100" value="0" style="flex:1;">
-              <input type="range" id="L0MaxSlider" min="0" max="100" value="100" style="flex:1;">
-            </div>
-          </div>
-
-          <div style="margin-bottom:20px;">
-            <label style="display:block; color:#fff; margin-bottom:5px;">L1 (Twist) - Min: <span id="L1MinLabel">0</span>% | Max: <span id="L1MaxLabel">100</span>%</label>
-            <div style="display:flex; gap:15px; align-items:center;">
-              <input type="range" id="L1MinSlider" min="0" max="100" value="0" style="flex:1;">
-              <input type="range" id="L1MaxSlider" min="0" max="100" value="100" style="flex:1;">
-            </div>
-          </div>
-
-          <div style="margin-bottom:20px;">
-            <label style="display:block; color:#fff; margin-bottom:5px;">L2 (Roll) - Min: <span id="L2MinLabel">0</span>% | Max: <span id="L2MaxLabel">100</span>%</label>
-            <div style="display:flex; gap:15px; align-items:center;">
-              <input type="range" id="L2MinSlider" min="0" max="100" value="0" style="flex:1;">
-              <input type="range" id="L2MaxSlider" min="0" max="100" value="100" style="flex:1;">
-            </div>
-          </div>
-
-          <div style="margin-bottom:20px;">
-            <label style="display:block; color:#fff; margin-bottom:5px;">L3 (Pitch) - Min: <span id="L3MinLabel">0</span>% | Max: <span id="L3MaxLabel">100</span>%</label>
-            <div style="display:flex; gap:15px; align-items:center;">
-              <input type="range" id="L3MinSlider" min="0" max="100" value="0" style="flex:1;">
-              <input type="range" id="L3MaxSlider" min="0" max="100" value="100" style="flex:1;">
-            </div>
-          </div>
+          <div id="axisLimitsContainer"></div>
         </div>
 
         <div style="display:flex; gap:10px; justify-content:flex-end;">
@@ -338,6 +309,188 @@
     </div>
 
     <script type="module">
+      const AXIS_CATALOG = [
+        { code: 'L0', label: 'Up' },
+        { code: 'L1', label: 'Forward' },
+        { code: 'L2', label: 'Left' },
+        { code: 'R0', label: 'Twist' },
+        { code: 'R1', label: 'Roll' },
+        { code: 'R2', label: 'Pitch' },
+        { code: 'V0', label: 'Vibe1' },
+        { code: 'V1', label: 'Vibe2' },
+        { code: 'A0', label: 'Valve' },
+        { code: 'A1', label: 'Suck' },
+        { code: 'A2', label: 'Lube' },
+      ];
+
+      const AXIS_LABEL_BY_CODE = Object.fromEntries(AXIS_CATALOG.map(a => [a.code, a.label]));
+      const LEGACY_AXIS_MAP = { L1: 'R0', L2: 'R1', L3: 'R2' }; // older UI used L1/L2/L3 for twist/roll/pitch
+
+      function normalizeAxisCode(axis) {
+        return String(axis || '').trim().toUpperCase();
+      }
+
+      function isCatalogAxis(axis) {
+        const a = normalizeAxisCode(axis);
+        return AXIS_LABEL_BY_CODE[a] != null;
+      }
+
+      function axisLabel(axis) {
+        const a = normalizeAxisCode(axis);
+        return AXIS_LABEL_BY_CODE[a] || a || 'Unknown';
+      }
+
+      function allAxisCodes() {
+        return AXIS_CATALOG.map(a => a.code);
+      }
+
+      function enabledAxisCodes() {
+        const enabled = [];
+        for (const a of AXIS_CATALOG) {
+          if (state.axisEnabled?.[a.code]) enabled.push(a.code);
+        }
+        return enabled;
+      }
+
+      function ensureAxisStateDefaults() {
+        if (!state.axisEnabled || typeof state.axisEnabled !== 'object') state.axisEnabled = {};
+        if (!state.axisLimits || typeof state.axisLimits !== 'object') state.axisLimits = {};
+
+        for (const code of allAxisCodes()) {
+          if (typeof state.axisEnabled[code] !== 'boolean') state.axisEnabled[code] = true;
+          if (!state.axisLimits[code] || typeof state.axisLimits[code] !== 'object') state.axisLimits[code] = { min: 0, max: 100 };
+          if (typeof state.axisLimits[code].min !== 'number') state.axisLimits[code].min = 0;
+          if (typeof state.axisLimits[code].max !== 'number') state.axisLimits[code].max = 100;
+        }
+      }
+
+      function coerceSelectedAxisToEnabled() {
+        const current = normalizeAxisCode(state.axis || 'L0');
+        if (isCatalogAxis(current) && !state.axisEnabled[current]) {
+          const first = enabledAxisCodes()[0] || 'L0';
+          state.axis = first;
+          return true;
+        }
+        return false;
+      }
+
+      function renderAxisSelectOptions() {
+        const sel = $('axisSelect');
+        const custom = $('axisCustom');
+        if (!sel) return;
+
+        const current = normalizeAxisCode(state.axis || 'L0');
+        const enabled = enabledAxisCodes();
+
+        sel.innerHTML = [
+          ...enabled.map(code => `<option value="${code}">${code} (${axisLabel(code)})</option>`),
+          `<option value="CUSTOM">Custom…</option>`,
+        ].join('');
+
+        if (enabled.includes(current)) {
+          sel.value = current;
+          if (custom) {
+            custom.value = current;
+            custom.style.display = 'none';
+          }
+        } else {
+          sel.value = 'CUSTOM';
+          if (custom) {
+            custom.value = current || 'L0';
+            custom.style.display = '';
+          }
+        }
+      }
+
+      function renderAxisSettingsUi() {
+        ensureAxisStateDefaults();
+
+        const enabledContainer = $('axisEnabledContainer');
+        const limitsContainer = $('axisLimitsContainer');
+        if (enabledContainer) {
+          enabledContainer.innerHTML = AXIS_CATALOG.map(a => {
+            const checked = state.axisEnabled[a.code] ? 'checked' : '';
+            return `
+              <label style="display:flex; align-items:center; gap:8px; color:#fff; cursor:pointer; user-select:none;">
+                <input type="checkbox" data-axis-enabled="${a.code}" ${checked} />
+                <span>${a.code} (${a.label})</span>
+              </label>
+            `;
+          }).join('');
+
+          enabledContainer.querySelectorAll('input[data-axis-enabled]').forEach(el => {
+            el.addEventListener('change', () => {
+              const code = normalizeAxisCode(el.getAttribute('data-axis-enabled'));
+              state.axisEnabled[code] = Boolean(el.checked);
+              savePrefs();
+
+              // If user disabled the currently-selected axis, switch to the first enabled.
+              if (coerceSelectedAxisToEnabled()) {
+                savePrefs();
+                updateAxisQuickUi();
+              }
+
+              renderAxisSelectOptions();
+              renderAxisLimitsUi();
+            });
+          });
+        }
+
+        function renderAxisLimitsUi() {
+          if (!limitsContainer) return;
+          const enabled = enabledAxisCodes();
+          limitsContainer.innerHTML = enabled.map(code => {
+            const limits = state.axisLimits[code] || { min: 0, max: 100 };
+            const minVal = clamp(Number(limits.min) || 0, 0, 100);
+            const maxVal = clamp(Number(limits.max) || 100, 0, 100);
+            const label = axisLabel(code);
+            return `
+              <div style="margin-bottom:20px;">
+                <label style="display:block; color:#fff; margin-bottom:5px;">${code} (${label}) - Min: <span id="${code}MinLabel">${minVal}</span>% | Max: <span id="${code}MaxLabel">${maxVal}</span>%</label>
+                <div style="display:flex; gap:15px; align-items:center;">
+                  <input type="range" data-axis-min="${code}" min="0" max="100" value="${minVal}" style="flex:1;">
+                  <input type="range" data-axis-max="${code}" min="0" max="100" value="${maxVal}" style="flex:1;">
+                </div>
+              </div>
+            `;
+          }).join('');
+
+          limitsContainer.querySelectorAll('input[data-axis-min]').forEach(el => {
+            el.addEventListener('input', () => {
+              const code = normalizeAxisCode(el.getAttribute('data-axis-min'));
+              const minVal = clamp(Number(el.value) || 0, 0, 100);
+              const maxVal = clamp(Number(state.axisLimits[code]?.max) || 100, 0, 100);
+              if (minVal > maxVal) {
+                el.value = String(maxVal);
+                return;
+              }
+              state.axisLimits[code].min = minVal;
+              const minLabel = $(`${code}MinLabel`);
+              if (minLabel) minLabel.textContent = String(minVal);
+              savePrefs();
+            });
+          });
+
+          limitsContainer.querySelectorAll('input[data-axis-max]').forEach(el => {
+            el.addEventListener('input', () => {
+              const code = normalizeAxisCode(el.getAttribute('data-axis-max'));
+              const maxVal = clamp(Number(el.value) || 100, 0, 100);
+              const minVal = clamp(Number(state.axisLimits[code]?.min) || 0, 0, 100);
+              if (maxVal < minVal) {
+                el.value = String(minVal);
+                return;
+              }
+              state.axisLimits[code].max = maxVal;
+              const maxLabel = $(`${code}MaxLabel`);
+              if (maxLabel) maxLabel.textContent = String(maxVal);
+              savePrefs();
+            });
+          });
+        }
+
+        renderAxisLimitsUi();
+      }
+
       const state = {
         serverUrl: 'http://localhost:3000',
         q: '',
@@ -364,6 +517,19 @@
         axisQuickSendTimer: null,
         drive: false,
         axis: 'L0',
+        axisEnabled: {
+          L0: true,
+          L1: true,
+          L2: true,
+          R0: true,
+          R1: true,
+          R2: true,
+          V0: true,
+          V1: true,
+          A0: true,
+          A1: true,
+          A2: true,
+        },
         autoHomeEnabled: false,
         autoHomePosition: 0,
         autoHomeDelay: 2,
@@ -393,7 +559,14 @@
           L0: { min: 0, max: 100 },
           L1: { min: 0, max: 100 },
           L2: { min: 0, max: 100 },
-          L3: { min: 0, max: 100 },
+          R0: { min: 0, max: 100 },
+          R1: { min: 0, max: 100 },
+          R2: { min: 0, max: 100 },
+          V0: { min: 0, max: 100 },
+          V1: { min: 0, max: 100 },
+          A0: { min: 0, max: 100 },
+          A1: { min: 0, max: 100 },
+          A2: { min: 0, max: 100 },
         },
         clientId: 'desktop-' + Math.random().toString(16).slice(2),
         sessionId: 'default',
@@ -1039,7 +1212,11 @@
           const p = JSON.parse(localStorage.getItem('mvDesktopPrefs') || 'null');
           if (p && typeof p === 'object') {
             if (typeof p.serverUrl === 'string') state.serverUrl = p.serverUrl;
-            if (typeof p.axis === 'string') state.axis = p.axis;
+            if (typeof p.axis === 'string') {
+              const raw = normalizeAxisCode(p.axis);
+              // Migrate older axis naming (L1/L2/L3 used for twist/roll/pitch in the old UI).
+              state.axis = LEGACY_AXIS_MAP[raw] || raw;
+            }
             if (typeof p.drive === 'boolean') state.drive = p.drive;
             if (typeof p.followRemote === 'boolean') state.followRemote = p.followRemote;
             if (typeof p.mediaMode === 'string') {
@@ -1067,14 +1244,37 @@
             if (typeof p.lastSerialPort === 'string') state.lastSerialPort = p.lastSerialPort;
             if (typeof p.lastSerialBaud === 'number') state.lastSerialBaud = p.lastSerialBaud;
             if (typeof p.axisQuickPct === 'number') state.axisQuickPct = p.axisQuickPct;
-            if (p.axisLimits && typeof p.axisLimits === 'object') {
-              ['L0', 'L1', 'L2', 'L3'].forEach(axis => {
-                if (p.axisLimits[axis]) {
-                  if (typeof p.axisLimits[axis].min === 'number') state.axisLimits[axis].min = p.axisLimits[axis].min;
-                  if (typeof p.axisLimits[axis].max === 'number') state.axisLimits[axis].max = p.axisLimits[axis].max;
-                }
-              });
+
+            ensureAxisStateDefaults();
+
+            if (p.axisEnabled && typeof p.axisEnabled === 'object') {
+              for (const code of allAxisCodes()) {
+                if (typeof p.axisEnabled[code] === 'boolean') state.axisEnabled[code] = p.axisEnabled[code];
+              }
             }
+
+            if (p.axisLimits && typeof p.axisLimits === 'object') {
+              // First, migrate any legacy limits for L1/L2/L3 -> R0/R1/R2.
+              for (const legacyCode of Object.keys(LEGACY_AXIS_MAP)) {
+                const mapped = LEGACY_AXIS_MAP[legacyCode];
+                const src = p.axisLimits[legacyCode];
+                if (src && typeof src === 'object') {
+                  if (typeof src.min === 'number') state.axisLimits[mapped].min = src.min;
+                  if (typeof src.max === 'number') state.axisLimits[mapped].max = src.max;
+                }
+              }
+
+              // Then apply non-legacy codes directly.
+              for (const code of allAxisCodes()) {
+                const src = p.axisLimits[code];
+                if (src && typeof src === 'object') {
+                  if (typeof src.min === 'number') state.axisLimits[code].min = src.min;
+                  if (typeof src.max === 'number') state.axisLimits[code].max = src.max;
+                }
+              }
+            }
+
+            coerceSelectedAxisToEnabled();
           }
         } catch {}
       }
@@ -1100,6 +1300,7 @@
           halfScript: state.halfScript,
           scriptDelay: state.scriptDelay,
           interpolationMode: state.interpolationMode,
+          axisEnabled: state.axisEnabled,
           axisLimits: state.axisLimits,
           autoConnectSerial: state.autoConnectSerial,
           lastSerialPort: state.lastSerialPort,
@@ -1256,7 +1457,12 @@
         if (!window.mv) return;
 
         try {
-          const axis = String(state.axis || 'L0').toUpperCase();
+          ensureAxisStateDefaults();
+          const axis = normalizeAxisCode(state.axis || 'L0');
+          if (isCatalogAxis(axis) && !state.axisEnabled[axis]) {
+            logToConsole('warn', `Auto-home skipped: axis ${axis} is disabled`);
+            return;
+          }
           const pos = Math.max(0, Math.min(100, Math.round(state.autoHomePosition)));
           const scaled = Math.round((pos / 100) * 999);
           const vvv = String(scaled).padStart(3, '0');
@@ -1351,7 +1557,9 @@
         const itp = interpolatePos(actions, scriptTimeMs, state.funIndex, state.interpolationMode, deriv);
         state.funIndex = itp.idx;
 
-        const axis = String(state.axis || 'L0').toUpperCase();
+        ensureAxisStateDefaults();
+        const axis = normalizeAxisCode(state.axis || 'L0');
+        if (isCatalogAxis(axis) && !state.axisEnabled[axis]) return;
         let pos = itp.pos;
         if (!Number.isFinite(pos)) pos = 0;
         pos = clamp(pos, 0, 100);
@@ -1436,7 +1644,12 @@
         
         state.autoHomeTimer = setTimeout(async () => {
           try {
-            const axis = String(state.axis || 'L0').toUpperCase();
+            ensureAxisStateDefaults();
+            const axis = normalizeAxisCode(state.axis || 'L0');
+            if (isCatalogAxis(axis) && !state.axisEnabled[axis]) {
+              logToConsole('warn', `Auto-home skipped: axis ${axis} is disabled`);
+              return;
+            }
             const pos = Math.max(0, Math.min(100, Math.round(state.autoHomePosition)));
             const scaled = Math.round((pos / 100) * 999);
             const vvv = String(scaled).padStart(3, '0');
@@ -3182,8 +3395,15 @@
       });
 
       function setAxis(val) {
-        state.axis = String(val || 'L0').toUpperCase();
+        ensureAxisStateDefaults();
+        const raw = normalizeAxisCode(val || 'L0');
+        state.axis = LEGACY_AXIS_MAP[raw] || raw;
+
+        // If the selected axis is a known catalog axis, enforce enabled selection.
+        coerceSelectedAxisToEnabled();
+
         savePrefs();
+        renderAxisSelectOptions();
         updateAxisQuickUi();
       }
 
@@ -3242,7 +3462,12 @@
           return;
         }
 
-        const axis = String(state.axis || 'L0').toUpperCase();
+        ensureAxisStateDefaults();
+        const axis = normalizeAxisCode(state.axis || 'L0');
+        if (isCatalogAxis(axis) && !state.axisEnabled[axis]) {
+          logToConsole('warn', `Axis ${axis} is disabled`);
+          return;
+        }
         const clampedPct = clamp(Number(pct) || 0, 0, 100);
 
         const { pos } = computeAxisPositionFromQuickPct(axis, clampedPct);
@@ -3365,14 +3590,8 @@
         $('scriptDelayInput').value = state.scriptDelay;
         const interpSel = $('interpModeSelect');
         if (interpSel) interpSel.value = state.interpolationMode || 'spline';
-        
-        // Update axis sliders
-        ['L0', 'L1', 'L2', 'L3'].forEach(axis => {
-          $(`${axis}MinSlider`).value = state.axisLimits[axis].min;
-          $(`${axis}MaxSlider`).value = state.axisLimits[axis].max;
-          $(`${axis}MinLabel`).textContent = state.axisLimits[axis].min;
-          $(`${axis}MaxLabel`).textContent = state.axisLimits[axis].max;
-        });
+
+        renderAxisSettingsUi();
         
         $('settingsModal').style.display = '';
         drawInterpolationExample();
@@ -3389,12 +3608,11 @@
         state.scheduledPlaySpec = '0.4';
         state.scriptDelay = 0;
         state.interpolationMode = 'spline';
-        state.axisLimits = {
-          L0: { min: 0, max: 100 },
-          L1: { min: 0, max: 100 },
-          L2: { min: 0, max: 100 },
-          L3: { min: 0, max: 100 },
-        };
+
+        state.axisEnabled = Object.fromEntries(allAxisCodes().map(c => [c, true]));
+        state.axisLimits = Object.fromEntries(allAxisCodes().map(c => [c, { min: 0, max: 100 }]));
+        ensureAxisStateDefaults();
+        coerceSelectedAxisToEnabled();
         savePrefs();
 
         recomputeHalfScriptTransform();
@@ -3411,12 +3629,10 @@
         $('scriptDelayInput').value = 0;
         const interpSel = $('interpModeSelect');
         if (interpSel) interpSel.value = 'spline';
-        ['L0', 'L1', 'L2', 'L3'].forEach(axis => {
-          $(`${axis}MinSlider`).value = 0;
-          $(`${axis}MaxSlider`).value = 100;
-          $(`${axis}MinLabel`).textContent = 0;
-          $(`${axis}MaxLabel`).textContent = 100;
-        });
+
+        renderAxisSettingsUi();
+        renderAxisSelectOptions();
+        updateAxisQuickUi();
 
         drawInterpolationExample();
       });
@@ -3463,32 +3679,7 @@
         });
       }
 
-      // Axis sliders
-      ['L0', 'L1', 'L2', 'L3'].forEach(axis => {
-        $(`${axis}MinSlider`).addEventListener('input', (e) => {
-          const minVal = Number(e.target.value);
-          const maxVal = state.axisLimits[axis].max;
-          if (minVal > maxVal) {
-            e.target.value = maxVal;
-            return;
-          }
-          state.axisLimits[axis].min = minVal;
-          $(`${axis}MinLabel`).textContent = minVal;
-          savePrefs();
-        });
-
-        $(`${axis}MaxSlider`).addEventListener('input', (e) => {
-          const maxVal = Number(e.target.value);
-          const minVal = state.axisLimits[axis].min;
-          if (maxVal < minVal) {
-            e.target.value = minVal;
-            return;
-          }
-          state.axisLimits[axis].max = maxVal;
-          $(`${axis}MaxLabel`).textContent = maxVal;
-          savePrefs();
-        });
-      });
+      // Axis enabled/limits UI is rendered dynamically when the settings modal opens.
 
       $('btnPlayPause').addEventListener('click', async () => {
         const v = $('video');
@@ -3791,16 +3982,9 @@
       } catch {}
 
       // Init axis dropdown
-      const common = ['L0','L1','L2','L3'];
-      if (common.includes(state.axis)) {
-        $('axisSelect').value = state.axis;
-        $('axisCustom').value = state.axis;
-        $('axisCustom').style.display = 'none';
-      } else {
-        $('axisSelect').value = 'CUSTOM';
-        $('axisCustom').value = state.axis;
-        $('axisCustom').style.display = '';
-      }
+      ensureAxisStateDefaults();
+      coerceSelectedAxisToEnabled();
+      renderAxisSelectOptions();
 
       // Init axis quick controls
       updateAxisQuickUi();
