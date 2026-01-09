@@ -1038,6 +1038,195 @@
           .replaceAll("'", '&#039;');
       }
 
+      function isHereSphere() {
+        try { return navigator.userAgent.toLowerCase().includes('heresphere'); } catch { return false; }
+      }
+
+      function renderNativeSelect(id, title, options, value) {
+        const safeId = escapeHtml(id);
+        const safeTitle = escapeHtml(title);
+        const v = String(value ?? '');
+        const opts = Array.isArray(options) ? options : [];
+        return `
+          <select id="${safeId}" title="${safeTitle}">
+            ${opts.map((o) => {
+              const ov = String(o && o.value != null ? o.value : '');
+              const ol = String(o && o.label != null ? o.label : ov);
+              const sel = ov === v ? 'selected' : '';
+              return `<option value="${escapeHtml(ov)}" ${sel}>${escapeHtml(ol)}</option>`;
+            }).join('')}
+          </select>
+        `;
+      }
+
+      function renderHereSphereDropdown(id, title, options, value) {
+        const safeId = escapeHtml(id);
+        const safeTitle = escapeHtml(title);
+        const v = String(value ?? '');
+        const opts = Array.isArray(options) ? options : [];
+        const selected = opts.find((o) => String(o && o.value != null ? o.value : '') === v);
+        const selectedLabel = selected ? String(selected.label ?? selected.value ?? '') : '';
+        const btnLabel = selectedLabel || title;
+
+        return `
+          <div class="mvDd" data-dd="${safeId}">
+            <button class="btn mvDdBtn" type="button" data-dd-btn="${safeId}" aria-haspopup="listbox" aria-expanded="false" title="${safeTitle}">${escapeHtml(btnLabel)} ▾</button>
+            <div class="mvDdList" role="listbox" aria-label="${safeTitle}">
+              ${opts.map((o) => {
+                const ov = String(o && o.value != null ? o.value : '');
+                const ol = String(o && o.label != null ? o.label : ov);
+                const isSel = ov === v;
+                return `<button type="button" class="mvDdOpt" role="option" data-dd-opt="${safeId}" data-value="${escapeHtml(ov)}" aria-selected="${isSel ? 'true' : 'false'}">${escapeHtml(ol)}</button>`;
+              }).join('')}
+            </div>
+          </div>
+        `;
+      }
+
+      function renderPicker(id, title, options, value) {
+        if (isHereSphere()) return renderHereSphereDropdown(id, title, options, value);
+        return renderNativeSelect(id, title, options, value);
+      }
+
+      async function applyGridHeaderChange(id, rawValue) {
+        const key = String(id || '').trim();
+        const val = String(rawValue ?? '');
+
+        if (key === 'pageSize') {
+          state.pageSize = Number(val) || 48;
+          state.page = 1;
+          savePrefs();
+          await loadList();
+          render();
+          return;
+        }
+
+        if (key === 'funFilter') {
+          state.funFilter = val;
+          state.page = 1;
+          await loadList();
+          render();
+          return;
+        }
+
+        if (key === 'vrFilter') {
+          state.vrFilter = val;
+          state.page = 1;
+          await loadList();
+          render();
+          return;
+        }
+
+        if (key === 'sort') {
+          state.sort = val;
+          state.page = 1;
+          savePrefs();
+          await loadList();
+          render();
+          return;
+        }
+
+        if (key === 'lengthBucket') {
+          state.lengthBucket = val;
+          state.page = 1;
+          savePrefs();
+          await loadList();
+          render();
+          return;
+        }
+
+        if (key === 'speedBucket') {
+          state.speedBucket = val;
+          state.page = 1;
+          savePrefs();
+          await loadList();
+          render();
+          return;
+        }
+
+        if (key === 'resolutionBucket') {
+          state.resolutionBucket = val;
+          state.page = 1;
+          savePrefs();
+          await loadList();
+          render();
+          return;
+        }
+      }
+
+      function ensureHereSphereHeaderDropdownsInstalled() {
+        try {
+          if (window.__mvHereSphereHeaderDropdownsInstalled) return;
+          window.__mvHereSphereHeaderDropdownsInstalled = true;
+
+          function closeAll(exceptId = null) {
+            const keep = exceptId ? String(exceptId) : null;
+            document.querySelectorAll('.mvDd.open').forEach((w) => {
+              const id = w.getAttribute('data-dd');
+              if (keep && id === keep) return;
+              w.classList.remove('open');
+              const btn = w.querySelector('[data-dd-btn]');
+              if (btn) btn.setAttribute('aria-expanded', 'false');
+            });
+          }
+
+          // Capture clicks so embedded browsers that do odd bubbling still work.
+          document.addEventListener('click', (e) => {
+            const t = e && e.target;
+            const closest = (node, sel) => {
+              try { return node && node.closest ? node.closest(sel) : null; } catch { return null; }
+            };
+
+            const opt = closest(t, '[data-dd-opt]');
+            if (opt) {
+              const id = opt.getAttribute('data-dd-opt');
+              const value = opt.getAttribute('data-value');
+              closeAll();
+              // Fire-and-forget; render() will rebuild the header anyway.
+              applyGridHeaderChange(id, value).catch(() => {});
+              try { e.preventDefault(); } catch {}
+              try { e.stopPropagation(); } catch {}
+              return;
+            }
+
+            const btn = closest(t, '[data-dd-btn]');
+            if (btn) {
+              const id = btn.getAttribute('data-dd-btn');
+              const wrap = closest(btn, '.mvDd');
+              const isOpen = Boolean(wrap && wrap.classList.contains('open'));
+              if (wrap) {
+                if (isOpen) {
+                  closeAll();
+                } else {
+                  closeAll(id);
+                  wrap.classList.add('open');
+                  btn.setAttribute('aria-expanded', 'true');
+                }
+              }
+              try { e.preventDefault(); } catch {}
+              try { e.stopPropagation(); } catch {}
+              return;
+            }
+
+            // Clicked elsewhere
+            closeAll();
+          }, true);
+
+          document.addEventListener('keydown', (e) => {
+            if (!e) return;
+            if (e.key === 'Escape') {
+              document.querySelectorAll('.mvDd.open').forEach((w) => {
+                w.classList.remove('open');
+                const btn = w.querySelector('[data-dd-btn]');
+                if (btn) btn.setAttribute('aria-expanded', 'false');
+              });
+            }
+          }, true);
+        } catch {
+          // ignore
+        }
+      }
+
       async function openById(id) {
         const token = ++state._openToken;
         const item = await getItemInfo(id);
@@ -1056,55 +1245,53 @@
           <header>
             <h1>MediaViewer</h1>
             <div class="search"><input id="q" placeholder="Search by filename or title" value="${escapeHtml(state.q)}" /></div>
-            <select id="pageSize" title="Items per page">
-              ${[12, 24, 48, 96].map((n) => `<option value="${n}" ${n === state.pageSize ? 'selected' : ''}>${n}/page</option>`).join('')}
-            </select>
-            <select id="funFilter" title="Funscript filter">
-              <option value="all" ${state.funFilter === 'all' ? 'selected' : ''}>All videos</option>
-              <option value="with" ${state.funFilter === 'with' ? 'selected' : ''}>With funscript</option>
-              <option value="without" ${state.funFilter === 'without' ? 'selected' : ''}>Without funscript</option>
-            </select>
-            <select id="vrFilter" title="VR filter">
-              <option value="all" ${state.vrFilter === 'all' ? 'selected' : ''}>All</option>
-              <option value="vr" ${state.vrFilter === 'vr' ? 'selected' : ''}>VR only</option>
-              <option value="nonvr" ${state.vrFilter === 'nonvr' ? 'selected' : ''}>Non-VR only</option>
-            </select>
-            <select id="sort" title="Sort">
-              <option value="newest" ${state.sort === 'newest' ? 'selected' : ''}>Newest</option>
-              <option value="oldest" ${state.sort === 'oldest' ? 'selected' : ''}>Oldest</option>
-              <option value="titleAsc" ${state.sort === 'titleAsc' ? 'selected' : ''}>Title (A → Z)</option>
-              <option value="titleDesc" ${state.sort === 'titleDesc' ? 'selected' : ''}>Title (Z → A)</option>
-              <option value="lenAsc" ${state.sort === 'lenAsc' ? 'selected' : ''}>Length (short → long)</option>
-              <option value="lenDesc" ${state.sort === 'lenDesc' ? 'selected' : ''}>Length (long → short)</option>
-              <option value="speedAsc" ${state.sort === 'speedAsc' ? 'selected' : ''}>Speed (slow → fast)</option>
-              <option value="speedDesc" ${state.sort === 'speedDesc' ? 'selected' : ''}>Speed (fast → slow)</option>
-              <option value="resAsc" ${state.sort === 'resAsc' ? 'selected' : ''}>Resolution (low → high)</option>
-              <option value="resDesc" ${state.sort === 'resDesc' ? 'selected' : ''}>Resolution (high → low)</option>
-            </select>
-            <select id="lengthBucket" title="Length">
-              <option value="" ${state.lengthBucket === '' ? 'selected' : ''}>Any length</option>
-              <option value="veryShort" ${state.lengthBucket === 'veryShort' ? 'selected' : ''}>Very Short</option>
-              <option value="short" ${state.lengthBucket === 'short' ? 'selected' : ''}>Short</option>
-              <option value="medium" ${state.lengthBucket === 'medium' ? 'selected' : ''}>Medium</option>
-              <option value="long" ${state.lengthBucket === 'long' ? 'selected' : ''}>Long</option>
-              <option value="veryLong" ${state.lengthBucket === 'veryLong' ? 'selected' : ''}>Very Long</option>
-            </select>
-            <select id="speedBucket" title="Speed">
-              <option value="" ${state.speedBucket === '' ? 'selected' : ''}>Any speed</option>
-              <option value="verySlow" ${state.speedBucket === 'verySlow' ? 'selected' : ''}>Very Slow</option>
-              <option value="slow" ${state.speedBucket === 'slow' ? 'selected' : ''}>Slow</option>
-              <option value="medium" ${state.speedBucket === 'medium' ? 'selected' : ''}>Medium</option>
-              <option value="fast" ${state.speedBucket === 'fast' ? 'selected' : ''}>Fast</option>
-              <option value="veryFast" ${state.speedBucket === 'veryFast' ? 'selected' : ''}>Very Fast</option>
-            </select>
-            <select id="resolutionBucket" title="Resolution">
-              <option value="" ${state.resolutionBucket === '' ? 'selected' : ''}>Any res</option>
-              <option value="veryLow" ${state.resolutionBucket === 'veryLow' ? 'selected' : ''}>Very Low</option>
-              <option value="low" ${state.resolutionBucket === 'low' ? 'selected' : ''}>Low</option>
-              <option value="medium" ${state.resolutionBucket === 'medium' ? 'selected' : ''}>Medium</option>
-              <option value="high" ${state.resolutionBucket === 'high' ? 'selected' : ''}>High</option>
-              <option value="veryHigh" ${state.resolutionBucket === 'veryHigh' ? 'selected' : ''}>Very High</option>
-            </select>
+            ${renderPicker('pageSize', 'Items per page', [12, 24, 48, 96].map((n) => ({ value: String(n), label: `${n}/page` })), String(state.pageSize))}
+            ${renderPicker('funFilter', 'Funscript filter', [
+              { value: 'all', label: 'All videos' },
+              { value: 'with', label: 'With funscript' },
+              { value: 'without', label: 'Without funscript' },
+            ], String(state.funFilter))}
+            ${renderPicker('vrFilter', 'VR filter', [
+              { value: 'all', label: 'All' },
+              { value: 'vr', label: 'VR only' },
+              { value: 'nonvr', label: 'Non-VR only' },
+            ], String(state.vrFilter))}
+            ${renderPicker('sort', 'Sort', [
+              { value: 'newest', label: 'Newest' },
+              { value: 'oldest', label: 'Oldest' },
+              { value: 'titleAsc', label: 'Title (A → Z)' },
+              { value: 'titleDesc', label: 'Title (Z → A)' },
+              { value: 'lenAsc', label: 'Length (short → long)' },
+              { value: 'lenDesc', label: 'Length (long → short)' },
+              { value: 'speedAsc', label: 'Speed (slow → fast)' },
+              { value: 'speedDesc', label: 'Speed (fast → slow)' },
+              { value: 'resAsc', label: 'Resolution (low → high)' },
+              { value: 'resDesc', label: 'Resolution (high → low)' },
+            ], String(state.sort))}
+            ${renderPicker('lengthBucket', 'Length', [
+              { value: '', label: 'Any length' },
+              { value: 'veryShort', label: 'Very Short' },
+              { value: 'short', label: 'Short' },
+              { value: 'medium', label: 'Medium' },
+              { value: 'long', label: 'Long' },
+              { value: 'veryLong', label: 'Very Long' },
+            ], String(state.lengthBucket || ''))}
+            ${renderPicker('speedBucket', 'Speed', [
+              { value: '', label: 'Any speed' },
+              { value: 'verySlow', label: 'Very Slow' },
+              { value: 'slow', label: 'Slow' },
+              { value: 'medium', label: 'Medium' },
+              { value: 'fast', label: 'Fast' },
+              { value: 'veryFast', label: 'Very Fast' },
+            ], String(state.speedBucket || ''))}
+            ${renderPicker('resolutionBucket', 'Resolution', [
+              { value: '', label: 'Any res' },
+              { value: 'veryLow', label: 'Very Low' },
+              { value: 'low', label: 'Low' },
+              { value: 'medium', label: 'Medium' },
+              { value: 'high', label: 'High' },
+              { value: 'veryHigh', label: 'Very High' },
+            ], String(state.resolutionBucket || ''))}
             <button class="btn" id="gridDec" title="Smaller grid">-</button>
             <button class="btn" id="gridInc" title="Larger grid">+</button>
             <button class="btn" id="scan">Rescan</button>
@@ -1145,59 +1332,17 @@
           window.__qT = window.setTimeout(() => doSearch(val), 200);
         });
 
-        el('pageSize').addEventListener('change', async (e) => {
-          state.pageSize = Number(e.target.value) || 48;
-          state.page = 1;
-          savePrefs();
-          await loadList();
-          render();
-        });
-
-        el('funFilter').addEventListener('change', async (e) => {
-          state.funFilter = e.target.value;
-          state.page = 1;
-          await loadList();
-          render();
-        });
-
-        el('vrFilter').addEventListener('change', async (e) => {
-          state.vrFilter = e.target.value;
-          state.page = 1;
-          await loadList();
-          render();
-        });
-
-        el('sort').addEventListener('change', async (e) => {
-          state.sort = e.target.value;
-          state.page = 1;
-          savePrefs();
-          await loadList();
-          render();
-        });
-
-        el('lengthBucket').addEventListener('change', async (e) => {
-          state.lengthBucket = String(e.target.value || '');
-          state.page = 1;
-          savePrefs();
-          await loadList();
-          render();
-        });
-
-        el('speedBucket').addEventListener('change', async (e) => {
-          state.speedBucket = String(e.target.value || '');
-          state.page = 1;
-          savePrefs();
-          await loadList();
-          render();
-        });
-
-        el('resolutionBucket').addEventListener('change', async (e) => {
-          state.resolutionBucket = String(e.target.value || '');
-          state.page = 1;
-          savePrefs();
-          await loadList();
-          render();
-        });
+        if (isHereSphere()) {
+          ensureHereSphereHeaderDropdownsInstalled();
+        } else {
+          el('pageSize').addEventListener('change', (e) => applyGridHeaderChange('pageSize', e.target.value));
+          el('funFilter').addEventListener('change', (e) => applyGridHeaderChange('funFilter', e.target.value));
+          el('vrFilter').addEventListener('change', (e) => applyGridHeaderChange('vrFilter', e.target.value));
+          el('sort').addEventListener('change', (e) => applyGridHeaderChange('sort', e.target.value));
+          el('lengthBucket').addEventListener('change', (e) => applyGridHeaderChange('lengthBucket', e.target.value));
+          el('speedBucket').addEventListener('change', (e) => applyGridHeaderChange('speedBucket', e.target.value));
+          el('resolutionBucket').addEventListener('change', (e) => applyGridHeaderChange('resolutionBucket', e.target.value));
+        }
 
         function isAllowedGridColumnCount(n) {
           if (!Number.isFinite(n)) return false;
