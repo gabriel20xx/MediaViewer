@@ -105,7 +105,6 @@
             <div class="row">
               <button id="ports">Refresh</button>
               <button id="connect">Connect</button>
-              <button id="disconnect">Disconnect</button>
             </div>
             <div class="row">
               <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
@@ -1209,6 +1208,12 @@
         serialBtn.className = connected ? 'statusBtn connected' : 'statusBtn disconnected';
       }
 
+      function updateSerialConnectButtonUi() {
+        const btn = $('connect');
+        if (!btn) return;
+        btn.textContent = state.serialConnected ? 'Disconnect' : 'Connect';
+      }
+
       function setDrivePill() {
         if (!driveBtn) return;
         driveBtn.textContent = state.drive ? 'Drive: ON' : 'Drive: OFF';
@@ -1254,6 +1259,7 @@
         state.lastSerialPort = portPath;
         state.lastSerialBaud = baudRate;
         setSerialPill(true);
+        updateSerialConnectButtonUi();
         updateAxisQuickUi();
         savePrefs();
       }
@@ -1263,6 +1269,7 @@
         setStatus('Serial disconnected');
         state.serialConnected = false;
         setSerialPill(false);
+        updateSerialConnectButtonUi();
         updateAxisQuickUi();
       }
 
@@ -3524,10 +3531,13 @@
 
       $('ports').addEventListener('click', () => listPorts());
       $('connect').addEventListener('click', async () => {
-        await serialConnectFromUi();
-      });
-      $('disconnect').addEventListener('click', async () => {
-        await serialDisconnectFromUi();
+        try {
+          if (state.serialConnected) await serialDisconnectFromUi();
+          else await serialConnectFromUi();
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          logToConsole('error', 'Serial action failed:', msg);
+        }
       });
 
       $('autoConnectSerial').addEventListener('change', () => {
@@ -4146,6 +4156,7 @@
 
       setWsPill(false);
       setSerialPill(false);
+      updateSerialConnectButtonUi();
       setDrivePill();
       setFsPill();
 
@@ -4168,6 +4179,7 @@
               await window.mv.serialConnect({ path: state.lastSerialPort, baudRate: state.lastSerialBaud });
               state.serialConnected = true;
               setSerialPill(true);
+              updateSerialConnectButtonUi();
               updateAxisQuickUi();
               setStatus('Serial auto-connected');
               logToConsole('log', 'Serial auto-connect successful');
