@@ -44,6 +44,10 @@
       .pill { display: inline-block; padding: 2px 8px; border: 1px solid #2a2f3a; border-radius: 999px; font-size: 11px; margin-left: 6px; }
       .pill.connected { background: #10b981; color: #fff; border-color: #059669; }
       .pill.disconnected { background: #ef4444; color: #fff; border-color: #dc2626; }
+      .statusBtn { padding: 6px 10px; border-radius: 999px; font-size: 11px; line-height: 1; border: 1px solid #2a2f3a; background: #11131a; color: #e6e6e6; }
+      .statusBtn.connected { background: #10b981; color: #fff; border-color: #059669; }
+      .statusBtn.disconnected { background: #ef4444; color: #fff; border-color: #dc2626; }
+      .statusBtn:focus { outline: 2px solid #2a2f3a; outline-offset: 2px; }
       .pill.tag-good { border-color: #14532d; background: rgba(20,83,45,0.35); color: #86efac; }
       .pill.tag-bad { border-color: #7f1d1d; background: rgba(127,29,29,0.35); color: #fecaca; }
       .pill.tag-vr { border-color: #8b5cf6; background: rgba(139,92,246,0.35); color: #fff; }
@@ -69,9 +73,9 @@
     <header>
       <h1>MediaViewer Desktop</h1>
       <div class="kpi">
-        <span class="pill" id="wsPill">Server: —</span>
-        <span class="pill" id="serialPill">Serial: —</span>
-        <span class="pill" id="drivePill">Drive: OFF</span>
+        <button class="statusBtn disconnected" id="wsBtn" type="button">Server: Connect</button>
+        <button class="statusBtn disconnected" id="serialBtn" type="button">Serial: Connect</button>
+        <button class="statusBtn disconnected" id="driveBtn" type="button">Drive: OFF</button>
         <span class="pill" id="fsPill">Funscript: —</span>
       </div>
     </header>
@@ -185,6 +189,22 @@
                   <div class="small" id="pageLabel" style="white-space: nowrap;"></div>
                 </div>
               </div>
+              <div>
+                <div class="small">Funscript</div>
+                <select id="funscriptFilter" style="max-width: 220px;">
+                  <option value="any">Any</option>
+                  <option value="1">Has funscript</option>
+                  <option value="0">No funscript</option>
+                </select>
+              </div>
+              <div>
+                <div class="small">VR</div>
+                <select id="vrFilter" style="max-width: 220px;">
+                  <option value="any">Any</option>
+                  <option value="1">VR only</option>
+                  <option value="0">Non-VR only</option>
+                </select>
+              </div>
             </div>
             <div class="row">
               <button id="refresh" style="max-width: 120px;">Refresh</button>
@@ -225,7 +245,7 @@
           <div class="meter-fill" id="funscriptMeter"></div>
         </div>
         <canvas id="funscriptGraph" width="640" height="140" style="width:100%; height:140px; border:1px solid #333; border-radius:8px; background:#0f1117;"></canvas>
-        <canvas id="funscriptOverviewGraph" width="640" height="90" style="width:100%; height:90px; border:1px solid #333; border-radius:8px; background:#0f1117; margin-top:8px;"></canvas>
+        <canvas id="funscriptOverviewGraph" width="640" height="90" style="width:100%; height:90px; border:1px solid #333; border-radius:8px; background:#0f1117; margin-top:8px; cursor: pointer;"></canvas>
         <div class="small" id="noVideoHint" style="display:none;">No media mode: using sync playback time only (no /stream requests).</div>
         <div class="small" id="playback"></div>
       </div>
@@ -494,6 +514,8 @@
       const state = {
         serverUrl: 'http://localhost:3000',
         q: '',
+        funscriptFilter: 'any', // 'any' | '1' | '0'
+        vrFilter: 'any', // 'any' | '1' | '0'
         page: 1,
         pageSize: 30,
         total: 0,
@@ -572,6 +594,7 @@
         sessionId: 'default',
         ws: null,
         wsConnected: false,
+        wsAutoConnect: true,
         wsPingTimer: null,
         wsLastPingNonce: null,
         wsLastPingSentAtMs: 0,
@@ -1071,9 +1094,9 @@
 
       const $ = (id) => document.getElementById(id);
       const statusEl = $('status');
-      const wsPill = $('wsPill');
-      const serialPill = $('serialPill');
-      const drivePill = $('drivePill');
+      const wsBtn = $('wsBtn');
+      const serialBtn = $('serialBtn');
+      const driveBtn = $('driveBtn');
       const fsPill = $('fsPill');
       const progressTimeEl = $('progressTime');
       const funscriptStatusEl = $('funscriptStatus');
@@ -1175,18 +1198,115 @@
           if (rtt !== null && isFresh) suffix = ` · RTT ${rtt}ms`;
         }
 
-        wsPill.textContent = connected ? `Server: connected${suffix}` : 'Server: disconnected';
-        wsPill.className = connected ? 'pill connected' : 'pill disconnected';
+        if (!wsBtn) return;
+        wsBtn.textContent = connected ? `Server: Disconnect${suffix}` : 'Server: Connect';
+        wsBtn.className = connected ? 'statusBtn connected' : 'statusBtn disconnected';
       }
 
       function setSerialPill(connected) {
-        serialPill.textContent = connected ? 'Serial: connected' : 'Serial: disconnected';
-        serialPill.className = connected ? 'pill connected' : 'pill disconnected';
+        if (!serialBtn) return;
+        serialBtn.textContent = connected ? 'Serial: Disconnect' : 'Serial: Connect';
+        serialBtn.className = connected ? 'statusBtn connected' : 'statusBtn disconnected';
       }
 
       function setDrivePill() {
-        drivePill.textContent = state.drive ? 'Drive: ON' : 'Drive: OFF';
-        drivePill.className = state.drive ? 'pill connected' : 'pill disconnected';
+        if (!driveBtn) return;
+        driveBtn.textContent = state.drive ? 'Drive: ON' : 'Drive: OFF';
+        driveBtn.className = state.drive ? 'statusBtn connected' : 'statusBtn disconnected';
+      }
+
+      function requestWsConnect() {
+        state.wsAutoConnect = true;
+        void allowSelfSignedForServer(state.serverUrl);
+
+        const ws = state.ws;
+        if (ws && (ws.readyState === 0 || ws.readyState === 1)) {
+          // Force reconnect to the latest serverUrl by closing and reopening.
+          ws.addEventListener('close', () => connectWs(), { once: true });
+          try { ws.close(); } catch {}
+          return;
+        }
+        connectWs();
+      }
+
+      function requestWsDisconnect() {
+        state.wsAutoConnect = false;
+        const ws = state.ws;
+        if (ws && (ws.readyState === 0 || ws.readyState === 1)) {
+          try { ws.close(); } catch {}
+        }
+      }
+
+      async function serialConnectFromUi() {
+        const portSel = $('port');
+        const baudSel = $('baud');
+        const portPath = String((portSel && 'value' in portSel ? portSel.value : '') || state.lastSerialPort || '').trim();
+        const baudRate = Number((baudSel && 'value' in baudSel ? baudSel.value : '') || state.lastSerialBaud || 115200);
+
+        if (!portPath) {
+          logToConsole('warn', 'No serial port selected');
+          return;
+        }
+
+        await window.mv.serialConnect({ path: portPath, baudRate });
+        setStatus('Serial connected');
+        state.serialConnected = true;
+        state.lastSerialPort = portPath;
+        state.lastSerialBaud = baudRate;
+        setSerialPill(true);
+        updateAxisQuickUi();
+        savePrefs();
+      }
+
+      async function serialDisconnectFromUi() {
+        await window.mv.serialDisconnect();
+        setStatus('Serial disconnected');
+        state.serialConnected = false;
+        setSerialPill(false);
+        updateAxisQuickUi();
+      }
+
+      function toggleDriveFromUi() {
+        state.drive = !state.drive;
+        const toggleDriveBtn = $('toggleDrive');
+        if (toggleDriveBtn) toggleDriveBtn.textContent = state.drive ? 'Drive: ON' : 'Drive: OFF';
+        setDrivePill();
+        savePrefs();
+        state.funIndex = -1;
+        updateFunscriptUi(state.lastFunscriptValue);
+
+        try {
+          if (window.mv && typeof window.mv.setKeepAwake === 'function') {
+            window.mv.setKeepAwake(state.drive);
+          }
+        } catch {}
+      }
+
+      if (wsBtn) {
+        wsBtn.addEventListener('click', () => {
+          const ws = state.ws;
+          const active = Boolean(ws) && (ws.readyState === 0 || ws.readyState === 1);
+          if (active) requestWsDisconnect();
+          else requestWsConnect();
+        });
+      }
+
+      if (serialBtn) {
+        serialBtn.addEventListener('click', async () => {
+          try {
+            if (state.serialConnected) await serialDisconnectFromUi();
+            else await serialConnectFromUi();
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logToConsole('error', 'Serial action failed:', msg);
+          }
+        });
+      }
+
+      if (driveBtn) {
+        driveBtn.addEventListener('click', () => {
+          toggleDriveFromUi();
+        });
       }
 
       function setFsPill() {
@@ -1218,6 +1338,14 @@
               state.axis = LEGACY_AXIS_MAP[raw] || raw;
             }
             if (typeof p.drive === 'boolean') state.drive = p.drive;
+            if (typeof p.funscriptFilter === 'string') {
+              const v = String(p.funscriptFilter || 'any');
+              state.funscriptFilter = (v === '1' || v === '0' || v === 'any') ? v : 'any';
+            }
+            if (typeof p.vrFilter === 'string') {
+              const v = String(p.vrFilter || 'any');
+              state.vrFilter = (v === '1' || v === '0' || v === 'any') ? v : 'any';
+            }
             if (typeof p.followRemote === 'boolean') state.followRemote = p.followRemote;
             if (typeof p.mediaMode === 'string') {
               const m = String(p.mediaMode || 'video');
@@ -1285,6 +1413,8 @@
           serverUrl: state.serverUrl,
           axis: state.axis,
           drive: state.drive,
+          funscriptFilter: state.funscriptFilter,
+          vrFilter: state.vrFilter,
           followRemote: state.followRemote,
           noVideo: state.noVideo,
           mediaMode,
@@ -1844,7 +1974,9 @@
           stopPing();
           setStatus('WS disconnected');
           setWsPill(false);
-          window.setTimeout(() => connectWs(), 1000);
+          if (state.wsAutoConnect !== false) {
+            window.setTimeout(() => connectWs(), 1000);
+          }
         });
 
         ws.addEventListener('message', (evt) => {
@@ -2249,6 +2381,12 @@
         url.searchParams.set('q', state.q);
         url.searchParams.set('page', String(state.page));
         url.searchParams.set('pageSize', String(state.pageSize));
+        if (state.funscriptFilter === '1' || state.funscriptFilter === '0') {
+          url.searchParams.set('hasFunscript', state.funscriptFilter);
+        }
+        if (state.vrFilter === '1' || state.vrFilter === '0') {
+          url.searchParams.set('isVr', state.vrFilter);
+        }
         const res = await fetch(url.toString());
         if (!res.ok) throw new Error(await res.text());
         const data = await res.json();
@@ -3348,11 +3486,27 @@
         state.serverUrl = $('serverUrl').value.trim() || state.serverUrl;
         await allowSelfSignedForServer(state.serverUrl);
         savePrefs();
-        try { if (state.ws) state.ws.close(); } catch {}
-        connectWs();
+        requestWsConnect();
         state.page = 1;
         await refresh();
       });
+
+      $('funscriptFilter').addEventListener('change', (e) => {
+        const v = String(e.target.value || 'any');
+        state.funscriptFilter = (v === '1' || v === '0' || v === 'any') ? v : 'any';
+        savePrefs();
+        state.page = 1;
+        refresh();
+      });
+
+      $('vrFilter').addEventListener('change', (e) => {
+        const v = String(e.target.value || 'any');
+        state.vrFilter = (v === '1' || v === '0' || v === 'any') ? v : 'any';
+        savePrefs();
+        state.page = 1;
+        refresh();
+      });
+
       $('q').addEventListener('input', (e) => {
         state.q = e.target.value;
         state.page = 1;
@@ -3370,23 +3524,10 @@
 
       $('ports').addEventListener('click', () => listPorts());
       $('connect').addEventListener('click', async () => {
-        const portPath = $('port').value;
-        const baudRate = Number($('baud').value || 115200);
-        await window.mv.serialConnect({ path: portPath, baudRate });
-        setStatus('Serial connected');
-        state.serialConnected = true;
-        state.lastSerialPort = portPath;
-        state.lastSerialBaud = baudRate;
-        setSerialPill(true);
-        updateAxisQuickUi();
-        savePrefs();
+        await serialConnectFromUi();
       });
       $('disconnect').addEventListener('click', async () => {
-        await window.mv.serialDisconnect();
-        setStatus('Serial disconnected');
-        state.serialConnected = false;
-        setSerialPill(false);
-        updateAxisQuickUi();
+        await serialDisconnectFromUi();
       });
 
       $('autoConnectSerial').addEventListener('change', () => {
@@ -3522,18 +3663,7 @@
       });
 
       $('toggleDrive').addEventListener('click', () => {
-        state.drive = !state.drive;
-        $('toggleDrive').textContent = state.drive ? 'Drive: ON' : 'Drive: OFF';
-        setDrivePill();
-        savePrefs();
-        state.funIndex = -1;
-        updateFunscriptUi(state.lastFunscriptValue);
-
-        try {
-          if (window.mv && typeof window.mv.setKeepAwake === 'function') {
-            window.mv.setKeepAwake(state.drive);
-          }
-        } catch {}
+        toggleDriveFromUi();
       });
 
       $('autoHomeEnabled').addEventListener('change', () => {
@@ -3969,6 +4099,9 @@
       $('serverUrl').value = state.serverUrl;
       await allowSelfSignedForServer(state.serverUrl);
 
+      try { $('funscriptFilter').value = state.funscriptFilter || 'any'; } catch {}
+      try { $('vrFilter').value = state.vrFilter || 'any'; } catch {}
+
       // Apply initial control lock state (e.g., if prefs selected HereSphere + Sync ON).
       updateHereSphereFollowLockUi();
 
@@ -4112,42 +4245,141 @@
 
       // Progress bar seeking
       const progressBar = $('progress');
+      function applySeekMs(seekMs) {
+        const ms = Number(seekMs);
+        if (!Number.isFinite(ms)) return;
+        try {
+          if (!state.current) return;
+
+          const clampedMs = Math.max(0, Math.round(ms));
+
+          if (state.noVideo) {
+            // Don't fight the remote driver.
+            if (state.followRemote) return;
+
+            state.noVideoBaseTimeMs = clampedMs;
+            state.noVideoAnchorAtMs = Date.now();
+            state.noVideoScheduledPlayAtLocalMs = 0;
+
+            const fps = 30;
+            const frame = currentFrame(clampedMs / 1000, fps);
+            sendSyncUpdate({ mediaId: state.current.id, timeMs: clampedMs, paused: Boolean(state.noVideoPaused), fps, frame }, true, getControlTargetClientId());
+            return;
+          }
+
+          const v = $('video');
+          if (!(v instanceof HTMLVideoElement)) return;
+          // Don't fight the remote driver.
+          if (state.followRemote) return;
+
+          v.currentTime = clampedMs / 1000;
+          // If we're currently playing, the seeked event will trigger a coordinated seek-sync
+          // so both ends buffer before resuming. Don't spam sync updates here.
+          if (!v.paused && getControlTargetClientId()) return;
+
+          // If paused, immediately sync the seek.
+          const fps = 30;
+          const frame = currentFrame(clampedMs / 1000, fps);
+          sendSyncUpdate({ mediaId: state.current.id, timeMs: clampedMs, paused: v.paused, fps, frame }, true, getControlTargetClientId());
+        } catch {}
+      }
+
       if (progressBar instanceof HTMLInputElement) {
         progressBar.addEventListener('input', () => {
           const seekMs = Number(progressBar.value);
-          if (!Number.isFinite(seekMs)) return;
+          applySeekMs(seekMs);
+        });
+      }
+
+      // Seek by clicking/dragging the overview funscript graph
+      const overviewCanvas = $('funscriptOverviewGraph');
+      if (overviewCanvas instanceof HTMLCanvasElement) {
+        let dragging = false;
+        let pendingSeekMs = null;
+        let lastMoveAt = 0;
+
+        function getOverviewSeekMsFromClientX(clientX) {
+          const actions = getActiveFunscriptActions();
+          if (!actions || !Array.isArray(actions) || actions.length === 0) return null;
+
+          const rect = overviewCanvas.getBoundingClientRect();
+          const cssW = rect.width || overviewCanvas.clientWidth || 640;
+          const padL = 10;
+          const padR = 10;
+          const w = Math.max(1, cssW - padL - padR);
+
+          const maxAt = Math.max(0, Math.round(Number(actions[actions.length - 1]?.at) || 0));
+          const dur = getCurrentDurationMsForOverview();
+          const xMax = Math.max(1, dur != null ? dur : 0, maxAt);
+
+          const x = clientX - rect.left;
+          const clamped = clamp(x, padL, padL + w);
+          const tScriptMs = ((clamped - padL) / w) * xMax;
+
+          const delay = Math.round(Number(state.scriptDelay) || 0);
+          let playbackMs = Math.round(tScriptMs + delay);
+          if (dur != null && Number.isFinite(dur) && dur > 0) playbackMs = clamp(playbackMs, 0, dur);
+          return playbackMs;
+        }
+
+        function isPlayingNow() {
+          if (state.noVideo) return !Boolean(state.noVideoPaused);
+          const v = $('video');
+          return v instanceof HTMLVideoElement ? !Boolean(v.paused) : false;
+        }
+
+        function applyOverviewSeek(playbackMs, isFinal) {
+          if (!Number.isFinite(playbackMs)) return;
+
+          // If we are the driver and currently playing with a peer target, avoid triggering
+          // many coordinated seek-sync handshakes while scrubbing; commit on pointer up.
+          if (!isFinal && isPlayingNow() && getControlTargetClientId()) {
+            pendingSeekMs = playbackMs;
+            if (progressBar instanceof HTMLInputElement) progressBar.value = String(Math.round(playbackMs));
+            return;
+          }
+
+          pendingSeekMs = null;
+          if (progressBar instanceof HTMLInputElement) progressBar.value = String(Math.round(playbackMs));
+          applySeekMs(playbackMs);
+        }
+
+        overviewCanvas.addEventListener('pointerdown', (e) => {
           try {
-            if (!state.current) return;
-
-            if (state.noVideo) {
-              // Don't fight the remote driver.
-              if (state.followRemote) return;
-
-              state.noVideoBaseTimeMs = Math.max(0, Math.round(seekMs));
-              state.noVideoAnchorAtMs = Date.now();
-              state.noVideoScheduledPlayAtLocalMs = 0;
-
-              const fps = 30;
-              const frame = currentFrame(seekMs / 1000, fps);
-              sendSyncUpdate({ mediaId: state.current.id, timeMs: seekMs, paused: Boolean(state.noVideoPaused), fps, frame }, true, getControlTargetClientId());
-              return;
-            }
-
-            const v = $('video');
-            if (!(v instanceof HTMLVideoElement)) return;
             // Don't fight the remote driver.
             if (state.followRemote) return;
-            v.currentTime = seekMs / 1000;
-            // If we're currently playing, the seeked event will trigger a coordinated seek-sync
-            // so both ends buffer before resuming. Don't spam sync updates here.
-            if (!v.paused && getControlTargetClientId()) return;
-
-            // If paused, immediately sync the seek.
-            const fps = 30;
-            const frame = currentFrame(seekMs / 1000, fps);
-            sendSyncUpdate({ mediaId: state.current.id, timeMs: seekMs, paused: v.paused, fps, frame }, true, getControlTargetClientId());
+            dragging = true;
+            overviewCanvas.setPointerCapture(e.pointerId);
+            const ms = getOverviewSeekMsFromClientX(e.clientX);
+            if (ms == null) return;
+            applyOverviewSeek(ms, false);
           } catch {}
         });
+
+        overviewCanvas.addEventListener('pointermove', (e) => {
+          try {
+            if (!dragging) return;
+            const now = Date.now();
+            if (now - lastMoveAt < 45) return;
+            lastMoveAt = now;
+            const ms = getOverviewSeekMsFromClientX(e.clientX);
+            if (ms == null) return;
+            applyOverviewSeek(ms, false);
+          } catch {}
+        });
+
+        function endDrag(e) {
+          try {
+            if (!dragging) return;
+            dragging = false;
+            const ms = pendingSeekMs != null ? pendingSeekMs : getOverviewSeekMsFromClientX(e.clientX);
+            if (ms == null) return;
+            applyOverviewSeek(ms, true);
+          } catch {}
+        }
+
+        overviewCanvas.addEventListener('pointerup', endDrag);
+        overviewCanvas.addEventListener('pointercancel', endDrag);
       }
 
       // Console view
